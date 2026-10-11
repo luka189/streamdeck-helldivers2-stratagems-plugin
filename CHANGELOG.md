@@ -4,6 +4,8 @@ What changed in each version of the plugin, newest first. The versions follow [s
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-11
+
 The first version.
 
 ### Added
@@ -18,4 +20,5 @@ The first version.
 - **A Clear Stratagem Slots key** that empties every slot until the next scan.
 - **Settings on the Scan key**, shared by every key: the scan period, the inputs, the timings, and the game's resolution for when its window can't be measured (the panel shows the size the plugin found).
 
-[Unreleased]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/commits/dev
+[Unreleased]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.2.0...dev
+[0.2.0]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/releases/tag/v0.2.0
