@@ -28,6 +28,12 @@ const ROW_SURE: f32 = 0.85; // glyph score trusted outright
 const ROW_MARGIN: f32 = 0.08; // below ROW_SURE, the runner-up glyph must trail by this much
 const FILL_DIFF: f32 = 45.0; // grey-level difference that marks a pixel as covered by the progress fill
 const FILL_GAP: usize = 3; // filled-row runs tolerate this many unclear rows (white glyphs)
+const COVER_MIN: f32 = 0.15; // fill share below which an unsure reading is not rescored under the fill
+// how the progress fill draws an icon: beige up to luminance FILL_DARK, cream from FILL_BRIGHT
+const FILL_DARK: f32 = 40.0;
+const FILL_BRIGHT: f32 = 160.0;
+const FILL_CREAM: [f32; 3] = [240.0, 232.0, 214.0];
+const FILL_BEIGE: [f32; 3] = [139.0, 128.0, 112.0];
 
 #[derive(Deserialize, Clone)]
 pub struct Stratagem {
@@ -388,14 +394,26 @@ impl Matcher {
         let mut glyph: Vec<(f32, usize)> =
             low[..ROW_TOP.min(low.len())].iter().map(|&(_, t)| (best_offset(win, &sized.glyph[t], &sized.glyph_idx, size).0, t)).collect();
         glyph.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let (best_g, best) = glyph[0];
+        let (best_g, mut best) = glyph[0];
         let second_g = glyph.get(1).map_or(-1.0, |g| g.0);
-        let (exist, dx, dy) = best_offset(win, &sized.whole[best], &sized.whole_idx, size);
+        let (mut exist, mut dx, mut dy) = best_offset(win, &sized.whole[best], &sized.whole_idx, size);
         if exist < ROW_MIN {
             self.last.remove(&k);
             return None;
         }
-        let sure = best_g >= ROW_SURE || best_g - second_g >= ROW_MARGIN;
+        let mut sure = best_g >= ROW_SURE || best_g - second_g >= ROW_MARGIN;
+        if !sure && let Some(t) = rescore_under_fill(win, sized, &glyph, dx, dy) {
+            // scored as the progress fill draws it, one candidate leads clearly
+            if t != best {
+                best = t;
+                (exist, dx, dy) = best_offset(win, &sized.whole[best], &sized.whole_idx, size);
+                if exist < ROW_MIN {
+                    self.last.remove(&k);
+                    return None;
+                }
+            }
+            sure = true;
+        }
         if sure {
             self.last.insert(k, (best, dx, dy));
         } else {
@@ -403,6 +421,64 @@ impl Matcher {
         }
         Some((best, exist, sure, dx, dy))
     }
+}
+
+/// For an unsure reading of an icon partly under the game's progress fill (cooldown from the bottom,
+/// in flight from the top). The fill draws the glyph cream on beige at about half the contrast, so the
+/// rows it leaves clear dominate the whole-glyph score; similar icons often differ only under the fill
+/// (the Quasar and Laser cannons share their top half). The fill is measured against the leading
+/// candidate; every candidate is then scored on the clear rows as it is and on the covered rows as the
+/// fill draws it, each part normalised on its own and weighted by its size, at one placement near the
+/// leading candidate's. Returns the candidate that then leads by ROW_MARGIN, if any.
+fn rescore_under_fill(win: &Img, sized: &Sized, glyph: &[(f32, usize)], dx: usize, dy: usize) -> Option<usize> {
+    let size = sized.size;
+    let band = (size as f64 * FRAME_FRAC).round() as usize;
+    let n = (size - 2 * band) as f32; // rows fill_profile measures
+    let (bottom, top) = fill_profile(win, dx, dy, &sized.images[glyph[0].1], size);
+    if bottom + top < COVER_MIN {
+        return None;
+    }
+    // template rows under the fill: the measured interior rows, plus the frame band on that side
+    let from_top = if top > 0.0 { band + (top * n).round() as usize } else { 0 };
+    let from_bottom = if bottom > 0.0 { size - band - (bottom * n).round() as usize } else { size };
+    let (covered, clear): (Vec<usize>, Vec<usize>) = sized.glyph_idx.iter().partition(|&&p| p / size < from_top || p / size >= from_bottom);
+    let total = sized.glyph_idx.len() as f32;
+    // the icon sits where the leading candidate matched, give or take a pixel
+    let near = |d: usize, room: usize| d.saturating_sub(1)..=(d + 1).min(room);
+    let mut scores: Vec<(f32, usize)> = glyph
+        .iter()
+        .map(|&(_, t)| {
+            let drawn = under_fill(&sized.images[t], from_top, from_bottom);
+            let parts: Vec<(Flat, &[usize])> =
+                [&covered, &clear].into_iter().filter(|idx| !idx.is_empty()).map(|idx| (flatten(&drawn.px, idx), idx.as_slice())).collect();
+            let mut best = -1.0f32;
+            for oy in near(dy, win.h.saturating_sub(size)) {
+                for ox in near(dx, win.w.saturating_sub(size)) {
+                    let s: f32 = parts.iter().map(|(f, idx)| score_at(win, f, idx, size, ox, oy) * idx.len() as f32).sum();
+                    best = best.max(s / total);
+                }
+            }
+            (best, t)
+        })
+        .collect();
+    scores.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let second = scores.get(1).map_or(-1.0, |s| s.0);
+    (scores[0].0 - second >= ROW_MARGIN).then_some(scores[0].1)
+}
+
+/// A clean icon as the game's progress fill draws it over rows `..from_top` and `from_bottom..`: from
+/// beige where it is dark to cream where it is bright (glyph, frame), with a cream line at the fill's edge.
+fn under_fill(icon: &Img, from_top: usize, from_bottom: usize) -> Img {
+    let mut out = icon.clone();
+    for y in (0..from_top).chain(from_bottom..icon.h) {
+        let edge = y + 1 == from_top || y == from_bottom;
+        for p in out.px[y * icon.w * 3..(y + 1) * icon.w * 3].as_chunks_mut::<3>().0 {
+            let lum = 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2];
+            let t = if edge { 1.0 } else { ((lum - FILL_DARK) / (FILL_BRIGHT - FILL_DARK)).clamp(0.0, 1.0) };
+            *p = std::array::from_fn(|c| FILL_BEIGE[c] + (FILL_CREAM[c] - FILL_BEIGE[c]) * t);
+        }
+    }
+    out
 }
 
 /// How much of the icon the game's progress fill covers, from the bottom and from the top.
@@ -852,6 +928,64 @@ mod tests {
         draw_row(&m, &mut col, origin, 4, upload, "word_cooldown");
         for _ in 0..2 {
             assert_eq!(read(&mut m, &col, origin), [(4, "SSSD Delivery".to_string(), true, Status::Cooldown)]);
+        }
+    }
+
+    /// An icon as the game's fill shows it from template row `from` down (or above `from` with
+    /// `from_top`): two flat tones as measured on screen in capture_2560x1440_082327, cream
+    /// (255, 255, 237) where the icon is bright and beige (151, 144, 112) where it is dark.
+    fn on_screen_fill(icon: &Img, from: usize, from_top: bool) -> Img {
+        let mut out = icon.clone();
+        let rows = if from_top { 0..from } else { from..icon.h };
+        for y in rows {
+            for p in out.px[y * icon.w * 3..(y + 1) * icon.w * 3].as_chunks_mut::<3>().0 {
+                let lum = 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2];
+                *p = if lum > 90.0 { [255.0, 255.0, 237.0] } else { [151.0, 144.0, 112.0] };
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn under_fill_draws_dark_beige_bright_cream_and_an_edge_line() {
+        let mut icon = Img::new(4, 6);
+        for y in 0..6 {
+            icon.px[y * 12..y * 12 + 6].copy_from_slice(&[10.0, 10.0, 10.0, 250.0, 250.0, 250.0]); // dark, bright
+            icon.px[y * 12 + 6..y * 12 + 12].copy_from_slice(&[100.0, 100.0, 100.0, 60.0, 220.0, 240.0]); // mid grey, blue
+        }
+        let out = under_fill(&icon, 1, 4);
+        let px = |x: usize, y: usize| out.px[(y * 4 + x) * 3..(y * 4 + x) * 3 + 3].to_vec();
+        assert_eq!(out.px[12..48], icon.px[12..48], "rows between the two fills are untouched");
+        for y in [0, 4] {
+            assert!((0..4).all(|x| px(x, y) == FILL_CREAM), "row {y} is the fill's edge line");
+        }
+        assert_eq!(px(0, 5), FILL_BEIGE, "dark turns beige");
+        assert_eq!(px(1, 5), FILL_CREAM, "bright turns cream");
+        assert_eq!(px(3, 5), FILL_CREAM, "a bright colour turns cream too");
+        let mid = px(2, 5);
+        assert!((0..3).all(|c| FILL_BEIGE[c] < mid[c] && mid[c] < FILL_CREAM[c]), "in between: {mid:?}");
+    }
+
+    /// The Quasar and Laser cannons share their top half; with the bottom half under the cooldown fill
+    /// the whole-glyph score leaves them within ROW_MARGIN. Scored as the fill draws them, the covered
+    /// gun tells them apart.
+    #[test]
+    fn similar_icons_half_under_the_fill_are_read_surely() {
+        let mut m = matcher();
+        for name in ["LAS-99 Quasar Cannon", "LAS-98 Laser Cannon"] {
+            for (from, from_top, word, status) in [
+                (31, false, "word_cooldown", Status::Cooldown),
+                (37, false, "word_cooldown", Status::Cooldown),
+                (24, true, "word_inbound", Status::Active),
+            ] {
+                m.reset();
+                let (mut col, origin) = blank_column();
+                let icon = on_screen_fill(&m.raw[idx(&m, name)].resize_area(57, 57), from, from_top);
+                let top = ROW0_Y; // slot 0: no empty slot above, as in the open menu
+                paste(&mut col, &icon, REF_X, top, origin);
+                paste(&mut col, &Img::load_png(&data().join(format!("status/{word}.png"))).unwrap(), WORD_X, top + BAND_Y, origin);
+                assert_eq!(read(&mut m, &col, origin), [(0, name.to_string(), true, status)], "{name}, fill at row {from}");
+            }
         }
     }
 

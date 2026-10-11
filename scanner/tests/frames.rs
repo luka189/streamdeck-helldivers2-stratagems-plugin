@@ -123,12 +123,8 @@ enum Field {
 }
 
 /// Where the reader disagrees with the picture today: (frame, slot, field).
-const MISREADS: &[(&str, usize, Field)] = &[
-    ("menu_open", 2, Field::Code),
-    ("menu_unavailable", 6, Field::Fill),
-    ("menu_activating", 0, Field::Badge),
-    ("capture_2560x1440_082327", 4, Field::Sure),
-];
+const MISREADS: &[(&str, usize, Field)] =
+    &[("menu_open", 2, Field::Code), ("menu_unavailable", 6, Field::Fill), ("menu_activating", 0, Field::Badge)];
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -222,11 +218,16 @@ fn assert_frame(name: &str) {
     assert!(bad.is_empty(), "{name}:\n{}", bad.join("\n"));
 }
 
+/// One field of one row is read as the frame shows it.
+fn assert_field(name: &str, slot: usize, field: Field) {
+    let bad = mismatches(name, |s, f| s == slot && f == field);
+    assert!(bad.is_empty(), "{name}:\n{}", bad.join("\n"));
+}
+
 /// The known misread still happens (so MISREADS stays current) and, once fixed, this passes.
 fn assert_misread_fixed(name: &str, slot: usize, field: Field) {
     assert!(known_misread(name, slot, field));
-    let bad = mismatches(name, |s, f| s == slot && f == field);
-    assert!(bad.is_empty(), "{name}:\n{}", bad.join("\n"));
+    assert_field(name, slot, field);
 }
 
 #[test]
@@ -344,12 +345,12 @@ fn menu_activating_reinforce_badge() {
     assert_misread_fixed("menu_activating", 0, Field::Badge);
 }
 
-/// The Quasar Cannon, half covered by its cooldown fill, is plainly visible but scores 0.76 with
-/// its runner-up too close; read unsure, so scan_menu (which keeps sure rows only) skips it.
+/// The Quasar Cannon, half covered by its cooldown fill, scores 0.76 on the whole glyph with the
+/// Laser Cannon within ROW_MARGIN; scored as the fill draws it, it is read surely, so scan_menu
+/// (which keeps sure rows only) learns the slot.
 #[test]
-#[ignore = "misread: the half-filled Quasar Cannon is read unsure (score 0.76), so a menu scan would not learn it"]
 fn capture_082327_quasar_sure() {
-    assert_misread_fixed("capture_2560x1440_082327", 4, Field::Sure);
+    assert_field("capture_2560x1440_082327", 4, Field::Sure);
 }
 
 // ---- fixture generator ----
