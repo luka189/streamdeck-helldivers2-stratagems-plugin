@@ -818,8 +818,11 @@ async fn main() {
             _ = anim.tick() => {
                 p.frame += 1;
                 // build.ps1 renames the running exe aside and puts a new build in its place: hand over to it
-                // (a running process keeps reporting its original path, so the file's timestamp is compared)
-                if p.frame.is_multiple_of(10) && std::fs::metadata(&exe_path).and_then(|m| m.modified()).ok() != exe_built {
+                // (a running process keeps reporting its original path, so the file's timestamp is compared).
+                // Only a timestamp read and different counts: an exe that can't be read (missing for a moment
+                // during a copy, or shielded, as a DRM-protected install may be) is no new build.
+                let modified = || std::fs::metadata(&exe_path).and_then(|m| m.modified()).ok();
+                if p.frame.is_multiple_of(10) && exe_built.zip(modified()).is_some_and(|(built, now)| built != now) {
                     log("a new build replaced this exe; exiting so Stream Deck starts it");
                     std::process::exit(0);
                 }
