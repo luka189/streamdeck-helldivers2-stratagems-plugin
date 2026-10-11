@@ -4,6 +4,18 @@ What changed in each version of the plugin, newest first. The versions follow [s
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-11
+
+### Changed
+
+- **Stream Deck 7.1 or later is needed.** The plugin now declares version 3 of the Stream Deck SDK, which the Elgato Marketplace asks for, and Stream Deck 7.1 as the oldest version it supports.
+- **The plugin is one file.** The stratagem list and its pictures are built into the plugin itself, so it reads no file of its own at run time, as the Marketplace's DRM protection requires.
+
+### Fixed
+
+- **Cooldowns on the keys match the game's.** A key could show a cooldown far from the game's: a Gunner FRV with 7:48 of 8 minutes left showed 62%, because the plugin worked out the cooldown's length from how much of the icon looked covered, and the FRV's white car and bullets look the same under the game's fill. The length now comes from a cooldown watched from its start, from one learned earlier in the session, or from the wiki, and the key counts down to the game's timer.
+- **The plugin no longer restarts itself in a loop** when it cannot read its own file, which could get it disabled by Stream Deck as unstable.
+
 ## [0.2.0] - 2026-10-11
 
 The first version.
@@ -20,5 +32,6 @@ The first version.
 - **A Clear Stratagem Slots key** that empties every slot until the next scan.
 - **Settings on the Scan key**, shared by every key: the scan period, the inputs, the timings, and the game's resolution for when its window can't be measured (the panel shows the size the plugin found).
 
-[Unreleased]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.2.0...dev
+[Unreleased]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.3.0...dev
+[0.3.0]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/releases/tag/v0.2.0

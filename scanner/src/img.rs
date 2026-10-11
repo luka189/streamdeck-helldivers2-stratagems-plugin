@@ -1,5 +1,3 @@
-use std::fs::File;
-use std::io::BufReader;
 use std::path::Path;
 
 /// RGB image, interleaved f32 channels.
@@ -67,14 +65,19 @@ impl Img {
         out
     }
 
-    /// Load an 8-bit PNG; alpha is premultiplied onto black, as the thresholds were tuned with.
+    /// Load an 8-bit PNG file (see `decode_png`); errors name the file.
     pub fn load_png(path: &Path) -> Result<Img, String> {
-        let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let mut decoder = png::Decoder::new(BufReader::new(file));
+        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Img::decode_png(&bytes).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Decode an 8-bit PNG; alpha is premultiplied onto black, as the thresholds were tuned with.
+    pub fn decode_png(png_bytes: &[u8]) -> Result<Img, String> {
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
         decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-        let mut reader = decoder.read_info().map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
         let mut buf = vec![0u8; reader.output_buffer_size().ok_or("png too large")?];
-        let info = reader.next_frame(&mut buf).map_err(|e| format!("{}: {e}", path.display()))?;
+        let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
         let bytes = &buf[..info.buffer_size()];
         let (w, h) = (info.width as usize, info.height as usize);
         let channels = match info.color_type {
@@ -82,7 +85,7 @@ impl Img {
             png::ColorType::Rgba => 4,
             png::ColorType::Grayscale => 1,
             png::ColorType::GrayscaleAlpha => 2,
-            other => return Err(format!("{}: unsupported colour type {other:?}", path.display())),
+            other => return Err(format!("unsupported colour type {other:?}")),
         };
         let mut img = Img::new(w, h);
         for i in 0..w * h {
@@ -339,6 +342,15 @@ mod tests {
         let _ = std::fs::remove_file(&bogus);
         let Err(err) = result else { panic!("a text file loaded as a PNG") };
         assert!(err.contains("bogus.png"), "{err}");
+    }
+
+    #[test]
+    fn decode_png_reads_bytes_as_load_png_reads_files() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/icons_144/Reinforce_Stratagem_Icon_Background.png");
+        let (file, bytes) = (Img::load_png(&path).unwrap(), Img::decode_png(&std::fs::read(&path).unwrap()).unwrap());
+        assert_eq!((file.w, file.h, &file.px), (bytes.w, bytes.h, &bytes.px));
+        assert!(Img::decode_png(b"not a png at all").is_err());
+        assert!(Img::decode_png(&[]).is_err());
     }
 
     #[test]

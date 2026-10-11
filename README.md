@@ -4,7 +4,7 @@
 
 > Your stratagems on Stream Deck keys, with their cooldowns, called in with one press
 
-[![Build](https://img.shields.io/github/actions/workflow/status/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/test.yml?branch=dev&style=flat-square&label=build)](https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/actions/workflows/test.yml) [![GitHub Release](https://img.shields.io/github/v/release/xiaodoudou/streamdeck-helldivers2-stratagems-plugin?style=flat-square&color=e94560)](https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/releases/latest) [![License](https://img.shields.io/badge/License-Apache--2.0-blue?style=flat-square)](LICENSE) [![Stars](https://img.shields.io/github/stars/xiaodoudou/streamdeck-helldivers2-stratagems-plugin?style=flat-square&color=yellow)](https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/stargazers) [![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078d6?style=flat-square)](docs/INSTALLATION.md#what-you-need) [![Stream Deck](https://img.shields.io/badge/Stream%20Deck-%3E%3D6.4-111111?style=flat-square)](docs/INSTALLATION.md) [![Built with Rust](https://img.shields.io/badge/Built%20with-Rust-dea584?style=flat-square)](docs/HOW_IT_WORKS.md)
+[![Build](https://img.shields.io/github/actions/workflow/status/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/test.yml?branch=dev&style=flat-square&label=build)](https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/actions/workflows/test.yml) [![GitHub Release](https://img.shields.io/github/v/release/xiaodoudou/streamdeck-helldivers2-stratagems-plugin?style=flat-square&color=e94560)](https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/releases/latest) [![License](https://img.shields.io/badge/License-Apache--2.0-blue?style=flat-square)](LICENSE) [![Stars](https://img.shields.io/github/stars/xiaodoudou/streamdeck-helldivers2-stratagems-plugin?style=flat-square&color=yellow)](https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/stargazers) [![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078d6?style=flat-square)](docs/INSTALLATION.md#what-you-need) [![Stream Deck](https://img.shields.io/badge/Stream%20Deck-%3E%3D7.1-111111?style=flat-square)](docs/INSTALLATION.md) [![Built with Rust](https://img.shields.io/badge/Built%20with-Rust-dea584?style=flat-square)](docs/HOW_IT_WORKS.md)
 
 A Stream Deck plugin for Helldivers 2. It reads your loadout from the game's screen, shows each stratagem on a key with its cooldown, and calls it in when you press the key, by opening the stratagem menu and typing the arrow code for you.
 
@@ -25,7 +25,7 @@ The plugin only looks at the screen and presses keys, the way you do. It doesn't
 
 ## Getting started
 
-You need Windows 10 or later, the Stream Deck app 6.4 or later, and Helldivers 2 on Steam.
+You need Windows 10 or later, the Stream Deck app 7.1 or later, and Helldivers 2 on Steam.
 
 1. Download `com.xiaodoudou.helldivers2-stratagems.streamDeckPlugin` from the [latest release](https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/releases/latest) and open it. Stream Deck installs the plugin.
 2. In the Stream Deck app, drag *Scan Now*, *Clear Stratagem Slots* and a few *Stratagem Slot* keys from the **Helldivers 2 Stratagems** category onto a profile.

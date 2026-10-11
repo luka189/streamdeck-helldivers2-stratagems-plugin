@@ -1,10 +1,9 @@
 # Rust build output
 /scanner/target/
 
-# build.ps1 output: the plugin binary, its logs and the data copied next to it, and the packaged plugin
+# build.ps1 output: the plugin binary, its logs, and the packaged plugin
 /plugin/com.xiaodoudou.helldivers2-stratagems.sdPlugin/*.exe
 /plugin/com.xiaodoudou.helldivers2-stratagems.sdPlugin/*.log
-/plugin/com.xiaodoudou.helldivers2-stratagems.sdPlugin/data/
 /dist/
 
 # full-size screenshots (several MB each); the tests use the crops in scanner/tests/fixtures

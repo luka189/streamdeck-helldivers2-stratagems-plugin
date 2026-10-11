@@ -5,7 +5,7 @@
 ## What you need
 
 - Windows 10 or later. The plugin is a Windows program.
-- The Stream Deck app, version 6.4 or later.
+- The Stream Deck app, version 7.1 or later.
 - Helldivers 2 on Steam. The Scan key starts the game through Steam; reading the game works whatever launched it.
 
 ## From a release

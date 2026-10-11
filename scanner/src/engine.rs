@@ -2,7 +2,6 @@
 //! and the key sequences that call stratagems in.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
 use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -10,6 +9,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::capture::{GameWindow, Grabber, Source, game_in_focus, locate};
+use crate::data::Data;
 use crate::input;
 pub use crate::matcher::Badge;
 use crate::matcher::{Matcher, Row, column_box};
@@ -134,8 +134,6 @@ const ACTIVE_GONE: Duration = Duration::from_millis(1500);
 const TIMER_ROUNDING: f32 = 1.0;
 // A narrower bound on the end moving it less than this is not taken: every change of a view is a repaint.
 const TIMER_STEP: Duration = Duration::from_millis(100);
-// Fill share from which time left / fill gives the cooldown's length (the fill is read a row at a time).
-const FILL_RELIABLE: f32 = 0.5;
 
 /// What a key shows for one menu slot.
 #[derive(Clone, Debug, PartialEq)]
@@ -208,9 +206,12 @@ impl Slot {
     /// A cooldown timer read on screen, `secs` left. Each reading bounds the end (see TIMER_ROUNDING) and
     /// narrows the bounds kept so far: the shown second changing pins the end to within a scan. A reading
     /// that does not fit them starts afresh. The key counts down to the latest end, with the fill drawn
-    /// reaching zero right then. Returns the cooldown's length when the reading tells it: exactly when
-    /// the cooldown was seen starting, otherwise from the fill when it is large enough to be reliable.
-    fn observe_timer(&mut self, secs: u32, fill_bottom: f32, now: Instant) -> Option<f32> {
+    /// reaching zero right then. Returns the cooldown's length when the reading tells it, which is only
+    /// when the cooldown was seen starting. Time left / fill is no measure of it: an icon with large white
+    /// parts looks the same under the game's cream fill, so its fill reads far too low (a Gunner FRV with
+    /// 468 s of 480 left read as 63% covered, which made a 740 s cooldown of it); the length then stays the
+    /// one learned earlier or the wiki's, and never below the time left.
+    fn observe_timer(&mut self, secs: u32, now: Instant) -> Option<f32> {
         let lo = now + Duration::from_secs(secs as u64);
         let hi = lo + Duration::from_secs_f32(TIMER_ROUNDING);
         let (lo, hi) = match self.ends {
@@ -219,12 +220,7 @@ impl Slot {
         };
         self.ends = Some((lo, hi));
         let left = hi.duration_since(now).as_secs_f32();
-        let length = match self.cooldown_from {
-            Some(start) => Some(now.duration_since(start).as_secs_f32() + left),
-            None if fill_bottom >= FILL_RELIABLE => Some(left / fill_bottom),
-            None => None,
-        }
-        .map(|s| s.max(left).max(1.0));
+        let length = self.cooldown_from.map(|start| (now.duration_since(start).as_secs_f32() + left).max(1.0));
         if let Some(s) = length {
             self.cooldown_s = s;
         }
@@ -323,7 +319,7 @@ const LOBBY_RESET: Duration = Duration::from_secs(10);
 static FIRING: Mutex<()> = Mutex::new(());
 
 impl Engine {
-    pub fn new(data: &Path) -> Result<Engine, String> {
+    pub fn new(data: &Data) -> Result<Engine, String> {
         Ok(Engine {
             matcher: Matcher::load(data)?,
             grabber: Grabber::new(),
@@ -443,8 +439,10 @@ impl Engine {
                 }
                 // learn the real cooldown from one seen whole: ship upgrades make it shorter than the wiki's
                 match (before, s.status) {
+                    // a call-in seen on its way, then cooling, has just started its cooldown; otherwise only a
+                    // full fill says so (and a fill can read low, see observe_timer)
                     (b, Status::Cooldown) if b != Status::Cooldown => {
-                        s.cooldown_from = (r.fill_bottom >= 0.9).then(Instant::now);
+                        s.cooldown_from = (b == Status::Active || r.fill_bottom >= 0.9).then(Instant::now);
                     }
                     (Status::Cooldown, Status::Ready) => {
                         if let Some(t) = s.cooldown_from.take() {
@@ -459,7 +457,7 @@ impl Engine {
                     _ => {}
                 }
                 if let Some(secs) = r.timer.filter(|_| (r.status, s.status) == (Status::Cooldown, Status::Cooldown))
-                    && let Some(length) = s.observe_timer(secs, r.fill_bottom, Instant::now())
+                    && let Some(length) = s.observe_timer(secs, Instant::now())
                 {
                     self.learned.insert(s.index, length);
                 }
@@ -620,7 +618,7 @@ mod tests {
     //! Slot logic driven through `update` with hand-made rows. Waits are simulated by moving the
     //! slot's timestamps into the past, so nothing here sleeps.
 
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
     use serde_json::json;
@@ -633,7 +631,7 @@ mod tests {
     }
 
     fn engine() -> Engine {
-        Engine::new(&data()).expect("engine loads the catalog")
+        Engine::new(&Data::Dir(data())).expect("engine loads the catalog")
     }
 
     fn idx(e: &Engine, name: &str) -> usize {
@@ -1296,19 +1294,46 @@ mod tests {
     }
 
     #[test]
-    fn the_length_is_learned_from_a_fill_large_enough_to_be_reliable() {
+    fn a_fill_never_sets_the_length() {
         let mut e = engine();
         let laser = idx(&e, "Orbital Laser");
-        // first seen half way through: no start, so the length comes from time left / fill
-        feed_n(&mut e, &[cooling(laser, 3, 0.6, Some(120))], 2);
-        let length = (120.0 + TIMER_ROUNDING) / 0.6;
-        assert!((e.cooldown_s(laser) - length).abs() < 0.1, "{}", e.cooldown_s(laser));
-        // a thin fill is too coarse to tell
+        // first seen half way through, whatever its fill reads: no start seen, so the wiki's length stays
+        for fill in [0.3, 0.6, 1.0] {
+            let mut e = engine();
+            feed_n(&mut e, &[cooling(laser, 3, fill, Some(120))], 2);
+            assert_eq!(e.cooldown_s(laser), 300.0, "fill {fill}");
+            let (secs, timed) = left(&e, 3);
+            assert!(timed && (secs - (120.0 + TIMER_ROUNDING)).abs() < 0.1, "the end follows the timer");
+            assert!((view(&e, 3).fill - (120.0 + TIMER_ROUNDING) / 300.0).abs() <= 1.0 / 72.0, "fill {fill}");
+        }
+        // a timer longer than the length known: the key is full, never over
+        feed_n(&mut e, &[cooling(laser, 3, 0.6, Some(400))], 2);
+        assert!((view(&e, 3).fill - 1.0).abs() <= 1.0 / 72.0);
+    }
+
+    /// Seen live: a Gunner FRV with 468 s of its 480 s left read as 63% covered (its white car and bullets look
+    /// the same under the cream fill); the length was taken as 468 / 0.63 = 743 s and the key showed 62%.
+    #[test]
+    fn a_low_fill_reading_does_not_shrink_the_key() {
         let mut e = engine();
-        feed_n(&mut e, &[cooling(laser, 3, 0.3, Some(120))], 2);
-        assert_eq!(e.cooldown_s(laser), 300.0);
-        let (secs, timed) = left(&e, 3);
-        assert!(timed && (secs - (120.0 + TIMER_ROUNDING)).abs() < 0.1, "the end still follows the timer");
+        let frv = idx(&e, "M-102 Gunner FRV");
+        assert_eq!(e.cooldown_s(frv), 480.0);
+        feed_n(&mut e, &[cooling(frv, 6, 0.63, Some(468))], 2);
+        assert_eq!(e.cooldown_s(frv), 480.0);
+        let f = view(&e, 6).fill;
+        assert!((f - (468.0 + TIMER_ROUNDING) / 480.0).abs() <= 1.0 / 72.0, "{f}");
+    }
+
+    #[test]
+    fn a_call_in_seen_on_its_way_then_cooling_starts_its_cooldown() {
+        let mut e = engine();
+        let frv = idx(&e, "M-102 Gunner FRV");
+        feed_n(&mut e, &[row(frv, 6, Status::Active)], 2);
+        // its fill reads low, but the cooldown has just started: the timer gives its length
+        feed_n(&mut e, &[cooling(frv, 6, 0.63, Some(431))], 2);
+        let length = 431.0 + TIMER_ROUNDING;
+        assert!((e.cooldown_s(frv) - length).abs() < 0.5, "{}", e.cooldown_s(frv));
+        assert!((view(&e, 6).fill - 1.0).abs() <= 1.0 / 72.0, "a cooldown just started is full");
     }
 
     #[test]

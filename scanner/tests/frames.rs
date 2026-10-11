@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use hd_scanner::data::Data;
 use hd_scanner::img::Img;
 use hd_scanner::matcher::{Matcher, Row, column_box};
 use hd_scanner::status::Status::{self, *};
@@ -163,7 +164,7 @@ struct Read {
 fn reads() -> &'static HashMap<&'static str, Read> {
     static READS: OnceLock<HashMap<&'static str, Read>> = OnceLock::new();
     READS.get_or_init(|| {
-        let mut m = Matcher::load(&data_dir()).expect("catalog");
+        let mut m = Matcher::load(&Data::Dir(data_dir())).expect("catalog");
         FRAMES
             .iter()
             .map(|f| {
@@ -339,7 +340,7 @@ fn badges_hash_by_digit_across_frames() {
 /// that way must find the same stratagems and statuses as fresh reads.
 #[test]
 fn a_warm_row_cache_reads_like_a_fresh_one() {
-    let mut m = Matcher::load(&data_dir()).expect("catalog");
+    let mut m = Matcher::load(&Data::Dir(data_dir())).expect("catalog");
     for name in ["menu_open", "capture_2560x1440_082327", "menu_unavailable", "menu_closed"] {
         let col = Img::load_png(&fixture_path(name)).expect(name);
         let rows = m.read_rows(&col, FRAME_H, origin(), 1.0);
@@ -405,7 +406,7 @@ fn save_png(img: &Img, path: &Path) {
 #[test]
 #[ignore = "generator: needs data/samples (full screenshots, not in git); rebuilds tests/fixtures"]
 fn make_fixtures() {
-    let mut m = Matcher::load(&data_dir()).expect("catalog");
+    let mut m = Matcher::load(&Data::Dir(data_dir())).expect("catalog");
     let (x0, y0, x1, y1) = column_box(FRAME_W, FRAME_H, 1.0);
     std::fs::create_dir_all(manifest_dir().join("tests/fixtures")).expect("fixtures dir");
     for f in FRAMES {
