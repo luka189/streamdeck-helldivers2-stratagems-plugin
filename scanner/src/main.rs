@@ -42,7 +42,8 @@ fn main() {
     }
 }
 
-/// Scan the running game at a fixed period and report timings: focus check, grab, read.
+/// Scan the running game at a fixed period, the way the plugin does, and report timings: finding the
+/// game, grab, read.
 fn live(data: &Path, secs: f64, period_ms: u64) {
     hd_scanner::capture::set_dpi_aware();
     let mut m = Matcher::load(data).unwrap_or_else(|e| {
@@ -50,13 +51,22 @@ fn live(data: &Path, secs: f64, period_ms: u64) {
         std::process::exit(1)
     });
     let mut grabber = hd_scanner::capture::Grabber::new();
-    let (mut grab_ms, mut read_ms, mut total_ms) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut find_ms, mut grab_ms, mut read_ms, mut total_ms) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut unfocused = 0;
     let mut last = String::new();
     let start = Instant::now();
+    let mut polled = None;
     while start.elapsed().as_secs_f64() < secs {
         let tick = Instant::now();
-        match hd_scanner::capture::find_window("helldivers2.exe") {
+        // the plugin checks that the game runs every two seconds, which also refreshes its process IDs
+        if polled.is_none_or(|p: Instant| p.elapsed() >= Duration::from_secs(2)) {
+            hd_scanner::capture::running("helldivers2.exe");
+            polled = Some(Instant::now());
+        }
+        let t = Instant::now();
+        let found = hd_scanner::capture::locate("helldivers2.exe");
+        find_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+        match found {
             None => unfocused += 1,
             Some(fg) => {
                 let (x0, y0, x1, y1) = column_box(fg.w, fg.h, 1.0);
@@ -90,7 +100,8 @@ fn live(data: &Path, secs: f64, period_ms: u64) {
         v.sort_by(f64::total_cmp);
         format!("median {:.1} ms, p95 {:.1} ms, max {:.1} ms", v[v.len() / 2], v[(v.len() as f64 * 0.95) as usize], v[v.len() - 1])
     };
-    println!("scans {} (game window not found {unfocused})", total_ms.len());
+    println!("scans {} (game not found {unfocused})", total_ms.len());
+    println!("find  {}", stat(&mut find_ms));
     println!("grab  {}", stat(&mut grab_ms));
     println!("read  {}", stat(&mut read_ms));
     println!("total {}", stat(&mut total_ms));

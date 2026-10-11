@@ -2,6 +2,8 @@
 //! The game process is never opened: it is found by name in a process snapshot and its window
 //! matched by process ID, since GameGuard guards handles to it.
 
+use std::time::{Duration, Instant};
+
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, ClientToScreen, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
@@ -79,12 +81,39 @@ fn process_ids(exe: &str) -> Vec<u32> {
 }
 
 /// Whether a process named `exe` is running (a snapshot, cheap enough to poll every few seconds).
+/// Refreshes the process IDs the scans use.
 pub fn running(exe: &str) -> bool {
-    !process_ids(exe).is_empty()
+    let pids = process_ids(exe);
+    let up = !pids.is_empty();
+    *PIDS.lock().unwrap_or_else(|e| e.into_inner()) = Some((exe.to_string(), pids, Instant::now()));
+    up
 }
 
+// A snapshot of every process costs milliseconds on a busy machine (about 15 ms with 560 processes),
+// too much for each scan, and the game's process ID does not change while it runs.
+const PIDS_FOR: Duration = Duration::from_secs(2);
+// Walking every window of the desktop is the other slow part; while the game's window is not known,
+// it is done at most this often, and the fallbacks of `locate` cover the time in between.
+const SEARCH_EVERY: Duration = Duration::from_secs(1);
+
+static PIDS: std::sync::Mutex<Option<(String, Vec<u32>, Instant)>> = std::sync::Mutex::new(None); // (exe, pids, when)
+static LAST_SEARCH: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
 static GAME_WINDOW: std::sync::Mutex<Option<(isize, u32)>> = std::sync::Mutex::new(None); // (hwnd, pid)
 static LAST_SEEN: std::sync::Mutex<Option<GameWindow>> = std::sync::Mutex::new(None);
+
+/// The process IDs of `exe`, from a snapshot at most PIDS_FOR old.
+fn game_pids(exe: &str) -> Vec<u32> {
+    let mut cache = PIDS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((name, pids, at)) = &*cache
+        && name == exe
+        && at.elapsed() < PIDS_FOR
+    {
+        return pids.clone();
+    }
+    let pids = process_ids(exe);
+    *cache = Some((exe.to_string(), pids.clone(), Instant::now()));
+    pids
+}
 
 /// Where to capture the game. Inside the Stream Deck plugin, Windows sometimes stops listing the
 /// game's windows to us a few seconds in (likely its anti-cheat), so this falls back to the
@@ -95,7 +124,7 @@ pub fn locate(exe: &str) -> Option<GameWindow> {
         *LAST_SEEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(g);
         return Some(g);
     }
-    let pids = process_ids(exe);
+    let pids = game_pids(exe);
     let pid = *pids.first()?;
     if let Some(hwnd) = game_foreground(&pids)
         && let Some(g) = describe(hwnd, pid, Source::Foreground)
@@ -147,7 +176,8 @@ pub fn diagnose(exe: &str) -> String {
 }
 
 /// The largest visible, non-minimised top-level window of the process `exe`, focused or not.
-/// Its handle is cached; processes and windows are only looked up again when that window goes away.
+/// Its handle is cached; processes and windows are only looked up again when that window goes away,
+/// and then at most every SEARCH_EVERY.
 pub fn find_window(exe: &str) -> Option<GameWindow> {
     let usable = |hwnd: HWND| unsafe { IsWindow(Some(hwnd)).as_bool() && IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() };
     let mut cache = GAME_WINDOW.lock().unwrap_or_else(|e| e.into_inner());
@@ -155,10 +185,19 @@ pub fn find_window(exe: &str) -> Option<GameWindow> {
         let hwnd = HWND(h as *mut _);
         let mut owner = 0u32;
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
-        if owner == pid && usable(hwnd) {
+        // owner 0: Windows hides who owns the game's window at times (see game_foreground), but a handle
+        // reused by another program would report that program, so the window is still the game's
+        if (owner == pid || owner == 0) && usable(hwnd) {
             return describe(hwnd, pid, Source::Window);
         }
         *cache = None;
+    }
+    {
+        let mut last = LAST_SEARCH.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|t| t.elapsed() < SEARCH_EVERY) {
+            return None;
+        }
+        *last = Some(Instant::now());
     }
 
     struct Search {
@@ -183,7 +222,7 @@ pub fn find_window(exe: &str) -> Option<GameWindow> {
         }
         BOOL(1)
     }
-    let pids = process_ids(exe);
+    let pids = game_pids(exe);
     if pids.is_empty() {
         return None;
     }
@@ -243,7 +282,7 @@ fn game_foreground(pids: &[u32]) -> Option<HWND> {
 
 /// Whether the game is the window receiving keyboard input.
 pub fn game_in_focus(exe: &str) -> bool {
-    let pids = process_ids(exe);
+    let pids = game_pids(exe);
     !pids.is_empty() && game_foreground(&pids).is_some()
 }
 
