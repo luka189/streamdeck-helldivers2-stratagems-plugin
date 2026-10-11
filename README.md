@@ -49,7 +49,7 @@ Measured on the development PC, with the game at 2560x1440:
 | One scan | About 13 ms: finding the game under 0.1 ms, capturing 9 ms, reading the rows 4 ms |
 | How often | Every 150 ms, and every 50 ms for four seconds after a call-in |
 | CPU while the game runs | About 7% of one core (734 ms of CPU time over 10 s on the ship) |
-| CPU while the game is closed | About 1% of one core: nothing is captured, the plugin only checks every two seconds whether the game has started |
+| CPU while the game is closed | Under 1% of one core (94 ms of CPU time over 10 s): nothing is captured, the plugin only checks every two seconds whether the game has started |
 | Memory | About 64 MB |
 | Download | 1.2 MB |
 
