@@ -22,7 +22,7 @@ flowchart LR
 
 Every two seconds, the plugin looks for a process named `helldivers2.exe` in a snapshot of the running processes. While there is none, it stops there: nothing is captured, and the Scan key offers to start the game through Steam.
 
-When the game runs, the plugin finds its window by process ID. Windows sometimes stops listing the game's windows to the plugin a few seconds in, probably because of the game's anti-cheat, so the plugin falls back, in order, to the window in front if it belongs to the game, the position where the window was last seen, and the whole main screen. Capturing needs a position on screen, not a handle to the window. The last fallback can only guess the game's size, so the *Game resolution* setting can set it by hand; the size found is shown on the Scan key's settings panel.
+When the game runs, the plugin finds its window by process ID and keeps the window's handle. A snapshot of every process costs milliseconds on a busy machine, so the game's process ID is reused for two seconds, and the desktop's windows are searched at most once a second while the game's window isn't known. Windows sometimes hides who owns the game's window, probably because of the game's anti-cheat (it reports process 0), and sometimes stops listing it at all. A known window that reports owner 0 is still the game's; without one, the plugin falls back, in order, to the window in front if it belongs to the game, the position where the window was last seen, and the whole main screen. Capturing needs a position on screen, not a handle to the window. The last fallback can only guess the game's size, so the *Game resolution* setting can set it by hand; the size found is shown on the Scan key's settings panel.
 
 ## Reading the menu
 
@@ -33,9 +33,10 @@ The rows of the menu sit at fixed places. At 2560x1440 the first icon's top is a
 1. ranks every known icon on a 24x24 copy, which is cheap, and keeps the best five;
 2. scores those five at full size, on the glyph only, because stratagems of the same family share the coloured frame;
 3. accepts the row when the score is high enough, with a higher bar for a row after an empty one (a lone notice row, where scenery could otherwise pass for an icon);
-4. reads the status line: either a word (Ready, Cooldown, Unavailable, Impact, Inbound, Activating), matched against greyscale pictures of the English words, or the arrows of the code;
-5. measures the progress fill, from the pixels that differ from the clean icon: rising from the bottom while cooling down, coming down from the top while in flight;
-6. reads the count badge in the icon's corner, and keeps its digits as a mask to draw on the key.
+4. when the best two are too close, for instance because the progress fill covers half the icon, measures the fill and scores again: the clear part against the clean icon, the covered part against the icon as the fill draws it;
+5. reads the status line: either a word (Ready, Cooldown, Unavailable, Impact, Inbound, Activating), matched against greyscale pictures of the English words, or the arrows of the code. After *Cooldown* and *Inbound* it reads the timer's digits too (`T-01:23`);
+6. measures the progress fill, from the pixels that differ from the clean icon: rising from the bottom while cooling down, coming down from the top while in flight;
+7. reads the count badge, which always sits at the same place against the icon's bottom-right corner and grows leftwards with more digits. It is found from its cream margins and the dark digits inside, not from its colour alone, which a bright sky can share, and its digits are kept as a mask to draw on the key.
 
 A few stratagems share one icon, such as SSSD Delivery and Upload Data. For those, the matcher reads the arrow code on the row and picks the stratagem whose code it is.
 
@@ -47,8 +48,10 @@ With the menu closed, the HUD shows much less: Reinforce, the rows of call-ins i
 
 - after a key press, it shows the stratagem as on its way until the screen confirms it, for up to six seconds;
 - when the row of a call-in in flight disappears from the closed HUD for 1.5 s, it takes the cooldown as started;
-- it counts a cooldown down itself between two readings, at the speed it measured, from the length it learned earlier in the session, or from the wiki's figure;
-- a cooldown is only over when the game shows the stratagem ready, or 20 s after it should have ended without being seen.
+- when it read the game's timer, it counts down to that: each reading of `T-01:23` puts the end between 83 and 84 s away, and successive readings narrow it. A timer read while at least half the cooldown is left, or a cooldown watched from its start, also gives the cooldown's real length, learned for the rest of the session;
+- otherwise it counts a cooldown down itself between two readings, at the speed it measured, from the length it learned, or from the wiki's figure;
+- a cooldown is only over when the game shows the stratagem ready, or 20 s after it should have ended without being seen;
+- a key press on a cooling stratagem is only sent in the last moment, when the end is that close: 0.3 s from a timer, 1.5 s from an estimate.
 
 The HUD tells the plugin whether a mission is on: Reinforce's row is always on screen in a mission, so any row read means one is. No row for three seconds means the ship or a menu (the yellow radar), and ten seconds of that empties the slots for the next mission. When a mission starts and the loadout isn't known, the plugin opens the stratagem menu once to read it.
 
@@ -76,7 +79,7 @@ scanner/               the Rust crate (hd-scanner)
 plugin/com.xiaodoudou.helldivers2-stratagems.sdPlugin/   the plugin folder: manifest, key images, settings panel
 data/stratagems.json   name, code, cooldown and icon of every stratagem, from the wiki
 data/icons_144/        the wiki icons as PNG, what the matcher compares with
-data/status/           the pictures of the status words and arrows
+data/status/           the pictures of the status words, the arrows and the timer's digits
 data/icons_svg/        the wiki icons as downloaded, which convert_icons.py renders to data/icons_144/
 tools/                 Python scripts that make the data and the pictures, and the commit check
 languages/             screenshots for new game languages, see TRANSLATIONS.md
@@ -86,7 +89,7 @@ languages/             screenshots for new game languages, see TRANSLATIONS.md
 |---|---|
 | `fetch_wiki.py` | `data/stratagems.json` and `data/icons_svg/`, from the wiki |
 | `convert_icons.py` | `data/icons_144/`, the icons as PNG |
-| `make_status_templates.py` | `data/status/`, cut out of two reference screenshots |
+| `make_status_templates.py` | `data/status/`, the words, arrows and digits, cut out of four reference screenshots |
 | `make_png_icons.py` | The key images in `plugin/.../imgs/`, from the SVG files in `tools/icon_src/` |
 | `make_plugin_icons.py` | The plugin and category icons, from the Reinforce icon |
 | `preview_icons.py` | A sheet of the key images side by side, to check them by eye |

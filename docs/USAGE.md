@@ -41,9 +41,9 @@ To set an input, click its box and press the key or mouse button, or choose one 
 
 Start the game, or press the Scan key while the game is closed: it shows a play button then, and starts the game through Steam.
 
-When a mission starts and your loadout isn't known yet, the plugin opens the stratagem menu once to read it (two seconds after the HUD appears, so that the drop has settled; if the menu can't open yet, it tries again a few times). After that, it follows what the HUD shows with the menu closed. Opening the menu yourself, or pressing the Scan key, reads everything again.
+When a mission starts and your loadout isn't known yet, the plugin opens the stratagem menu to read it. The HUD shows up before you can open the menu (in the hellpod, while landing), so the plugin checks whether the menu really opened, and tries again every two seconds until it does, for about twenty seconds. If you open the menu yourself in the meantime, that counts too. After that, it follows what the HUD shows with the menu closed. Opening the menu yourself, or pressing the Scan key, reads everything again.
 
-Press a slot key to call its stratagem in. The game has to be the window in front; if it isn't, the key shows a warning triangle and nothing is typed into the other window. The plugin also refuses a stratagem the game would refuse (cooling down, unavailable or already on its way), except in the last 5% of a cooldown, where it can't tell the difference reliably.
+Press a slot key to call its stratagem in. The game has to be the window in front; if it isn't, the key shows a warning triangle and nothing is typed into the other window. The plugin also refuses a stratagem the game would refuse (cooling down, unavailable or already on its way), except in the very last moment of a cooldown: the last 0.3 s when it read the game's timer, the last 1.5 s when it had to estimate the end.
 
 ### What a slot key shows
 
@@ -57,7 +57,7 @@ Press a slot key to call its stratagem in. The game has to be the window in fron
 | A number in the bottom-right corner | The count the game shows, like the reinforcements left or the uses of a stratagem |
 | Black | Nothing in that slot this mission |
 
-With the menu closed, the game doesn't show a stratagem's cooldown. The plugin then counts it down itself, from the length it measured earlier in the session or from the [wiki](https://helldivers.wiki.gg/wiki/Stratagems) figure, and corrects it as soon as the game shows the row again.
+With the menu open, the plugin reads the game's own timer (`Cooldown T-01:23`), and the key counts down to it exactly: it turns ready when the timer reaches zero, not before. With the menu closed, the game shows no timer. The plugin then counts the cooldown down itself, from the timer it read last, from the length it learned earlier in the session, or from the [wiki](https://helldivers.wiki.gg/wiki/Stratagems) figure, and corrects it as soon as the game shows the row again.
 
 ### What the Scan key shows
 

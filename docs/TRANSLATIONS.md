@@ -49,7 +49,7 @@ The menu closed, just after throwing the Orbital Laser, with Activating:
 
 ## Expected words
 
-These come from the game's own text files. [languages/status_words.json](../languages/status_words.json) lists them with their string IDs. Nobody has checked them against screenshots yet, and the screenshots are how they get checked. The timer (`01:23` here) is only an example; the plugin only needs the word before it.
+These come from the game's own text files. [languages/status_words.json](../languages/status_words.json) lists them with their string IDs. Nobody has checked them against screenshots yet, and the screenshots are how they get checked. The timer (`01:23` here) is only an example. The plugin reads its digits too, and digits look the same in every language, but where they sit after the word differs (Japanese has no `T-`, Russian puts a colon after the word), so keep the whole timer in the screenshot.
 
 | Folder | Language | Ready | Cooldown | Unavailable | Inbound | Impact | Activating |
 |---|---|---|---|---|---|---|---|
