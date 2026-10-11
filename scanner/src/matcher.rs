@@ -81,52 +81,54 @@ impl PartialEq for Badge {
     }
 }
 
-/// Find the cream count badge right of the icon whose top is `top` (1440p units). It is
-/// right-aligned near x=140 and grows leftwards with more digits; requiring it to reach past the
-/// icon's right edge keeps white glyphs inside the icon from passing for one.
+// The count badge at 1440p: a cream box over the icon's bottom-right corner, its last column at
+// x=BADGE_RIGHT and its rows BADGE_ROWS below the icon's top, growing leftwards with more digits;
+// dark digits inside, with a margin of cream all round.
+const BADGE_RIGHT: f64 = 138.0;
+const BADGE_ROWS: (f64, f64) = (33.0, 56.0);
+const BADGE_MIN_W: f64 = 18.0; // one digit makes a 24 px box
+const BADGE_CREAM: usize = 90; // percent of a margin that must be cream (the box's edge blends with the scene)
+
+/// Find the count badge of the icon whose top is `top` (1440p units). The scene next to the icon
+/// can be as cream as the box (a bright sky), so the box is not found by its colour alone but by its
+/// place: its right margin lies past the icon's right edge where no glyph reaches, its top and
+/// bottom margins run cream from there to its left edge, and dark digits sit inside.
 fn read_badge(col: &Img, f: f64, top: f64, origin: (usize, usize)) -> Option<Badge> {
-    let rx0 = (100.0 * f).round() as isize - origin.0 as isize;
-    let ry0 = ((top + 28.0) * f).round() as isize - origin.1 as isize;
-    let reg = col.crop(rx0, ry0, (46.0 * f).round() as usize, (36.0 * f).round() as usize);
+    let (left0, top0) = ((100.0 * f).round() as isize, ((top + 28.0) * f).round() as isize);
+    let reg = col.crop(left0 - origin.0 as isize, top0 - origin.1 as isize, (46.0 * f).round() as usize, (36.0 * f).round() as usize);
+    // region column of 1440p x, region row of 1440p rows below the icon's top
+    let cx = |x: f64| ((x * f).round() as isize - left0).max(0) as usize;
+    let cy = |dy: f64| (((top + dy) * f).round() as isize - top0).max(0) as usize;
+    let (right, y0, y1) = (cx(BADGE_RIGHT), cy(BADGE_ROWS.0), cy(BADGE_ROWS.1));
+    if reg.w <= right || reg.h <= y1 {
+        return None;
+    }
     let at = |x: usize, y: usize| &reg.px[(y * reg.w + x) * 3..(y * reg.w + x) * 3 + 3];
     let lum = |p: &[f32]| 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2];
     let cream =
         |p: &[f32]| lum(p) > 175.0 && p.iter().cloned().fold(f32::MIN, f32::max) - p.iter().cloned().fold(f32::MAX, f32::min) < 45.0;
-
-    // the badge's top margin rows are cream end to end: the longest cream run there gives its width
-    let mut best: Option<(usize, usize, usize)> = None; // (row, x0, x1)
-    for y in (2.0 * f) as usize..((14.0 * f) as usize).min(reg.h) {
-        let mut run_start = None;
-        for x in 0..=reg.w {
-            let c = x < reg.w && cream(at(x, y));
-            match (c, run_start) {
-                (true, None) => run_start = Some(x),
-                (false, Some(s)) => {
-                    if best.is_none_or(|b| x - s > b.2 - b.1 + 1) {
-                        best = Some((y, s, x - 1));
-                    }
-                    run_start = None;
-                }
-                _ => {}
-            }
-        }
-    }
-    let (row, x0, x1) = best?;
-    let right_edge = (133.0 * f).round() as isize - (100.0 * f).round() as isize;
-    if ((x1 - x0 + 1) as f64) < 12.0 * f || (x1 as isize) < right_edge {
+    let creamy = |xs: std::ops::RangeInclusive<usize>, ys: &[usize]| {
+        let n = xs.clone().count() * ys.len();
+        xs.flat_map(|x| ys.iter().map(move |&y| (x, y))).filter(|&(x, y)| cream(at(x, y))).count() * 100 >= n * BADGE_CREAM
+    };
+    // rows inside the box's soft edge; its top and bottom margins hold no digit (some digits start
+    // three rows into the box, others five)
+    let inner: Vec<usize> = (y0 + 1..y1).collect();
+    let (above, below) = ((2.0 * f).round().max(1.0) as usize, (3.0 * f).round().max(1.0) as usize);
+    let margins: Vec<usize> = inner.iter().take(above).chain(inner.iter().rev().take(below)).copied().collect();
+    // the right margin, past the icon's right edge
+    if !creamy(cx(BADGE_RIGHT - 6.0)..=right - 1, &inner) {
         return None;
     }
-    let creamy = |y: usize| (x0..=x1).filter(|&x| cream(at(x, y))).count() * 100 >= (x1 - x0 + 1) * 45;
-    let (mut y0, mut y1) = (row, row);
-    while y0 > 0 && creamy(y0 - 1) {
-        y0 -= 1;
+    // the box's left edge: the top and bottom margins run cream up to it
+    let mut x0 = cx(BADGE_RIGHT - 7.0);
+    while x0 > 0 && creamy(x0 - 1..=x0 - 1, &margins) {
+        x0 -= 1;
     }
-    while y1 + 1 < reg.h && creamy(y1 + 1) {
-        y1 += 1;
-    }
-    if ((y1 - y0 + 1) as f64) < 15.0 * f {
+    if (((right - x0 + 1) as f64) < BADGE_MIN_W * f) || !creamy(x0 + 1..=x0 + (4.0 * f).round() as usize, &inner) {
         return None;
     }
+    let x1 = right;
     // the box's soft edge blends with the scene and wobbles by a pixel or two between frames;
     // the digits are solid, so the badge is keyed on the digits alone, trimmed tight
     // the outer two pixels of the box are where the scene shows through, so they are not searched
@@ -928,6 +930,60 @@ mod tests {
         draw_row(&m, &mut col, origin, 4, upload, "word_cooldown");
         for _ in 0..2 {
             assert_eq!(read(&mut m, &col, origin), [(4, "SSSD Delivery".to_string(), true, Status::Cooldown)]);
+        }
+    }
+
+    // ---- read_badge ----
+
+    const SKY: [f32; 3] = [225.0, 220.0, 200.0]; // as cream as the badge box, like menu_activating's sky
+    const DUSK: [f32; 3] = [30.0, 28.0, 20.0];
+
+    fn column_of(scene: [f32; 3]) -> (Img, (usize, usize)) {
+        let (mut col, origin) = blank_column();
+        col.px.as_chunks_mut::<3>().0.iter_mut().for_each(|p| *p = scene);
+        (col, origin)
+    }
+
+    #[test]
+    fn a_badge_reads_the_same_on_any_scene() {
+        let m = matcher();
+        let (_, origin) = blank_column();
+        let frame = Img::load_png(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/menu_closed.png")).unwrap();
+        let want = read_badge(&frame, 1.0, ROW0_Y, origin).expect("Reinforce's badge 5 on menu_closed");
+        // the box as drawn on menu_closed, without its soft edge: the scene meets it directly, as the
+        // bright sky does on menu_activating
+        let (bx, by) = (115.0, ROW0_Y + BADGE_ROWS.0);
+        let badge = frame.crop(bx as isize - origin.0 as isize, by as isize - origin.1 as isize, 24, 24);
+        for scene in [SKY, DUSK, [250.0, 250.0, 250.0]] {
+            let (mut col, origin) = column_of(scene);
+            paste(&mut col, &m.raw[idx(&m, "Reinforce")].resize_area(57, 57), REF_X, ROW0_Y, origin);
+            paste(&mut col, &badge, bx, by, origin);
+            let got = read_badge(&col, 1.0, ROW0_Y, origin).unwrap_or_else(|| panic!("no badge on scene {scene:?}"));
+            assert_eq!((got.w, got.h, got.hash, &got.bits), (want.w, want.h, want.hash, &want.bits), "scene {scene:?}");
+        }
+    }
+
+    #[test]
+    fn icons_without_a_badge_read_none_even_on_a_scene_as_cream_as_one() {
+        let m = matcher();
+        let dimmed = |icon: &Img| Img { px: icon.px.iter().map(|v| v * 0.45 + 20.0).collect(), ..icon.clone() };
+        for scene in [SKY, DUSK] {
+            let (col, origin) = column_of(scene);
+            assert!(read_badge(&col, 1.0, ROW0_Y, origin).is_none(), "bare scene {scene:?}");
+            for name in ["LIFT-182 Warp Pack", "Resupply", "Orbital Laser", "LAS-99 Quasar Cannon", "M-102 Gunner FRV", "SoS Beacon"] {
+                let icon = m.raw[idx(&m, name)].resize_area(57, 57);
+                let looks = [
+                    ("clean", icon.clone()),
+                    ("covered", under_fill(&icon, 0, 0)),
+                    ("half covered", under_fill(&icon, 0, 30)),
+                    ("dimmed", dimmed(&icon)),
+                ];
+                for (look, drawn) in looks {
+                    let (mut col, origin) = column_of(scene);
+                    paste(&mut col, &drawn, REF_X, ROW0_Y, origin);
+                    assert!(read_badge(&col, 1.0, ROW0_Y, origin).is_none(), "{look} {name} on scene {scene:?}");
+                }
+            }
         }
     }
 

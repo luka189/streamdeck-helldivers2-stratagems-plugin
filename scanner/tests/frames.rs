@@ -123,8 +123,7 @@ enum Field {
 }
 
 /// Where the reader disagrees with the picture today: (frame, slot, field).
-const MISREADS: &[(&str, usize, Field)] =
-    &[("menu_open", 2, Field::Code), ("menu_unavailable", 6, Field::Fill), ("menu_activating", 0, Field::Badge)];
+const MISREADS: &[(&str, usize, Field)] = &[("menu_open", 2, Field::Code), ("menu_unavailable", 6, Field::Fill)];
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -337,12 +336,11 @@ fn menu_unavailable_dimmed_row_fill() {
     assert_misread_fixed("menu_unavailable", 6, Field::Fill);
 }
 
-/// The Reinforce badge "5" sits against a bright, cream-coloured sky: the badge's top margin run
-/// merges with the background, so read_badge rejects it.
+/// The Reinforce badge "5" sits against a bright sky as cream as the box itself; the badge is found
+/// by its place and its digits, not by the longest cream run, which spilled into the sky.
 #[test]
-#[ignore = "misread: Reinforce's badge 5 against a bright sky is not found"]
 fn menu_activating_reinforce_badge() {
-    assert_misread_fixed("menu_activating", 0, Field::Badge);
+    assert_field("menu_activating", 0, Field::Badge);
 }
 
 /// The Quasar Cannon, half covered by its cooldown fill, scores 0.76 on the whole glyph with the
