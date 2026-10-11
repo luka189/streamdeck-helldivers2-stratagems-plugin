@@ -4,6 +4,11 @@ What changed in each version of the plugin, newest first. The versions follow [s
 
 ## [Unreleased]
 
+### Changed
+
+- **Stream Deck 7.1 or later is needed.** The plugin now declares version 3 of the Stream Deck SDK, which the Elgato Marketplace asks for, and Stream Deck 7.1 as the oldest version it supports.
+- **The plugin is one file.** The stratagem list and its pictures are built into the plugin itself, so it reads no file of its own at run time, as the Marketplace's DRM protection requires.
+
 ## [0.2.0] - 2026-10-11
 
 The first version.

@@ -1,9 +1,11 @@
 {
-  "SDKVersion": 2,
+  "SDKVersion": 3,
   "UUID": "com.xiaodoudou.helldivers2-stratagems",
   "Name": "Helldivers 2 Stratagems",
   "Author": "xiaodoudou",
   "Description": "Shows the stratagems read from your Helldivers 2 loadout and enters their codes.",
+  "URL": "https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin",
+  "SupportURL": "https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/issues",
   "Version": "0.2.0.0",
   "Icon": "imgs/plugin",
   "CodePath": "hd2-plugin.exe",
@@ -17,7 +19,7 @@
     }
   ],
   "Software": {
-    "MinimumVersion": "6.4"
+    "MinimumVersion": "7.1"
   },
   "Actions": [
     {
