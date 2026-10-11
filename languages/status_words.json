@@ -1,0 +1,181 @@
+{
+ "source": "Helldivers 2 strings resources (bundle 9ba626afa44a3aa3), read offline from the install",
+ "ids": {
+  "ready": "a851371b",
+  "cooldown": "ab47253c",
+  "unavailable": "1d79b848",
+  "inbound": "b535ba27",
+  "impact": "a47be06f",
+  "activating": "91154d9b"
+ },
+ "languages": {
+  "en": {
+   "name": "English",
+   "game_code": "us",
+   "words": {
+    "ready": "Ready",
+    "cooldown": "Cooldown T-#MINUTES:#SECONDS",
+    "unavailable": "Unavailable",
+    "inbound": "Inbound T-#MINUTES:#SECONDS",
+    "impact": "Impact",
+    "activating": "Activating"
+   }
+  },
+  "fr": {
+   "name": "French",
+   "game_code": "fr",
+   "words": {
+    "ready": "Prêt",
+    "cooldown": "COMPTE À REBOURS T-#MINUTES:#SECONDS",
+    "unavailable": "Indisponible",
+    "inbound": "CONTACT T-#MINUTES:#SECONDS",
+    "impact": "IMPACT",
+    "activating": "Activation"
+   }
+  },
+  "de": {
+   "name": "German",
+   "game_code": "de",
+   "words": {
+    "ready": "Bereit",
+    "cooldown": "Abklingzeit T-#MINUTES:#SECONDS",
+    "unavailable": "Nicht verfügbar",
+    "inbound": "Ankunft in T-#MINUTES:#SECONDS",
+    "impact": "Einschlag",
+    "activating": "Aktivierung"
+   }
+  },
+  "it": {
+   "name": "Italian",
+   "game_code": "it",
+   "words": {
+    "ready": "Pronti...",
+    "cooldown": "T. ricarica -#MINUTES:#SECONDS",
+    "unavailable": "Non disponibile",
+    "inbound": "T. arrivo -#MINUTES:#SECONDS",
+    "impact": "Impatto",
+    "activating": "Attivazione"
+   }
+  },
+  "es": {
+   "name": "Spanish (Spain)",
+   "game_code": "es",
+   "words": {
+    "ready": "Listo",
+    "cooldown": "TIEMPO DE RECUPERACIÓN T-#MINUTES:#SECONDS",
+    "unavailable": "No disponible",
+    "inbound": "LLEGADA EN T-#MINUTES:#SECONDS",
+    "impact": "Impacto",
+    "activating": "ACTIVANDO"
+   }
+  },
+  "es-419": {
+   "name": "Spanish (Latin America)",
+   "game_code": "ms",
+   "words": {
+    "ready": "Listo",
+    "cooldown": "Tiempo de recarga de T-#MINUTES:#SECONDS",
+    "unavailable": "No disponible",
+    "inbound": "Llegada en T-#MINUTES:#SECONDS",
+    "impact": "Impacto",
+    "activating": "Activando"
+   }
+  },
+  "pt": {
+   "name": "Portuguese (Portugal)",
+   "game_code": "pt",
+   "words": {
+    "ready": "Preparado",
+    "cooldown": "Tempo de recarga T-#MINUTES:#SECONDS",
+    "unavailable": "Indisponível",
+    "inbound": "A chegar em T-#MINUTES:#SECONDS",
+    "impact": "Impacto",
+    "activating": "A ativar"
+   }
+  },
+  "pt-BR": {
+   "name": "Portuguese (Brazil)",
+   "game_code": "bp",
+   "words": {
+    "ready": "Pronto",
+    "cooldown": "Tempo de espera T-#MINUTES:#SECONDS",
+    "unavailable": "Indisponível",
+    "inbound": "Chegando em T-#MINUTES:#SECONDS",
+    "impact": "Impacto",
+    "activating": "Ativando"
+   }
+  },
+  "pl": {
+   "name": "Polish",
+   "game_code": "pl",
+   "words": {
+    "ready": "Gotowość",
+    "cooldown": "Regeneracja T-#MINUTES:#SECONDS",
+    "unavailable": "Niedostępne",
+    "inbound": "Przybędzie T-#MINUTES:#SECONDS",
+    "impact": "Uderzenie",
+    "activating": "Aktywowanie"
+   }
+  },
+  "ru": {
+   "name": "Russian",
+   "game_code": "ru",
+   "words": {
+    "ready": "Готово",
+    "cooldown": "До перезарядки: #MINUTES:#SECONDS",
+    "unavailable": "Недоступно",
+    "inbound": "До прибытия: #MINUTES:#SECONDS",
+    "impact": "Удар",
+    "activating": "Активация"
+   }
+  },
+  "ja": {
+   "name": "Japanese",
+   "game_code": "jp",
+   "words": {
+    "ready": "準備完了",
+    "cooldown": "クールダウン完了まで#MINUTES:#SECONDS",
+    "unavailable": "使用不可",
+    "inbound": "到着まで#MINUTES:#SECONDS",
+    "impact": "到着",
+    "activating": "起動中"
+   }
+  },
+  "ko": {
+   "name": "Korean",
+   "game_code": "ko",
+   "words": {
+    "ready": "준비",
+    "cooldown": "쿨다운 T-#MINUTES:#SECONDS",
+    "unavailable": "이용 불가",
+    "inbound": "접근 중 T-#MINUTES:#SECONDS",
+    "impact": "도착",
+    "activating": "작동 중"
+   }
+  },
+  "zh-Hans": {
+   "name": "Chinese (Simplified)",
+   "game_code": "cn",
+   "words": {
+    "ready": "就位",
+    "cooldown": "冷却倒计时 #MINUTES:#SECONDS",
+    "unavailable": "不可用",
+    "inbound": "抵达倒计时 #MINUTES:#SECONDS",
+    "impact": "着陆",
+    "activating": "正在启动"
+   }
+  },
+  "zh-Hant": {
+   "name": "Chinese (Traditional)",
+   "game_code": "tc",
+   "words": {
+    "ready": "就緒",
+    "cooldown": "冷卻時間：#MINUTES:#SECONDS",
+    "unavailable": "未能使用",
+    "inbound": "抵達時間：#MINUTES:#SECONDS",
+    "impact": "著陸",
+    "activating": "啟動中"
+   }
+  }
+ }
+}
