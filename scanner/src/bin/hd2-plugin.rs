@@ -317,6 +317,12 @@ fn set_title(context: &str, title: &str) -> Out {
     MessageOut::SetTitle { context: context.into(), payload: TitlePayload { title: Some(title.into()), target: Target::Both, state: None } }
 }
 
+/// Whether a press on a cooling slot goes through at `now`: close enough to its end.
+fn near_ready(v: &SlotView, now: Instant) -> bool {
+    v.status == Status::Cooldown
+        && v.ready.is_some_and(|r| r.at.saturating_duration_since(now) <= if r.timed { TIMER_SLACK } else { NEAR_READY })
+}
+
 fn describe(l: &Loadout, names: &[String]) -> String {
     l.iter()
         .enumerate()
@@ -342,7 +348,11 @@ const ANIM: Duration = Duration::from_millis(200);
 const BURST: Duration = Duration::from_secs(4); // after a call-in, scan fast to catch the game's state change
 const BURST_PERIOD: Duration = Duration::from_millis(50);
 const MENU_SETTLE: Duration = Duration::from_secs(2); // after the HUD appears, before opening the menu
-const NEAR_READY: f32 = 0.05; // cooldown fill at or below which a press is sent anyway
+// A cooldown this close to its estimated end lets a press through anyway: the last sliver of the fill is
+// too thin to measure (if it is not quite ready, the game ignores the code). With a timer read on screen
+// the end is known, and only TIMER_SLACK of it is given away.
+const NEAR_READY: Duration = Duration::from_millis(1500);
+const TIMER_SLACK: Duration = Duration::from_millis(300);
 const MENU_RETRY: Duration = Duration::from_secs(5);
 const MENU_TRIES: u32 = 6;
 const GAME_POLL: Duration = Duration::from_secs(2); // how often to check that the game is running
@@ -677,13 +687,16 @@ async fn main() {
                                 match p.loadout.get(slot).cloned().flatten() {
                                     // nothing there, or the game would refuse it right now
                                     None => vec![MessageOut::ShowAlert { context }],
-                                    // the last sliver of a cooldown is not measurable, so presses there go through
-                                    // (if it is not quite ready, the game ignores the code)
+                                    // a cooldown about to end lets the press through (see NEAR_READY)
                                     Some(v)
                                         if matches!(v.status, Status::Cooldown | Status::Unavailable | Status::Active)
-                                            && !(v.status == Status::Cooldown && v.fill <= NEAR_READY) =>
+                                            && !near_ready(&v, Instant::now()) =>
                                     {
-                                        log(format!("slot {} pressed while {:?}", slot + 1, v.status));
+                                        let left = v.ready.map_or(String::new(), |r| {
+                                            let secs = r.at.saturating_duration_since(Instant::now()).as_secs_f32();
+                                            format!(", {secs:.1} s left by {}", if r.timed { "the timer" } else { "the fill" })
+                                        });
+                                        log(format!("slot {} pressed while {:?}{left}", slot + 1, v.status));
                                         vec![MessageOut::ShowAlert { context }]
                                     }
                                     Some(v) => {
@@ -860,6 +873,30 @@ mod tests {
         assert_eq!((info.color_type, info.bit_depth), (png::ColorType::Rgba, png::BitDepth::Eight));
         buf.truncate(info.buffer_size());
         (info.width as usize, info.height as usize, buf)
+    }
+
+    #[test]
+    fn a_press_goes_through_only_near_the_end_of_a_cooldown() {
+        use hd_scanner::engine::ReadyAt;
+        let now = Instant::now();
+        let cooling = |secs: f32, timed: bool| SlotView {
+            ready: Some(ReadyAt { at: now + Duration::from_secs_f32(secs), timed }),
+            ..sv(0, Status::Cooldown, 0.1, None)
+        };
+        // estimated from the fill: in seconds left, whatever the cooldown's length (it used to be 5% of the fill,
+        // 15 s of a 300 s cooldown)
+        assert!(near_ready(&cooling(1.4, false), now));
+        assert!(!near_ready(&cooling(1.6, false), now));
+        assert!(!near_ready(&cooling(9.0, false), now));
+        // a timer read on screen: only a few hundred milliseconds early
+        assert!(near_ready(&cooling(0.25, true), now));
+        assert!(!near_ready(&cooling(0.5, true), now));
+        assert!(!near_ready(&cooling(1.4, true), now));
+        assert!(near_ready(&cooling(0.0, true), now + Duration::from_secs(1)), "past the end");
+        // nothing else counts as near ready
+        assert!(!near_ready(&sv(0, Status::Cooldown, 0.0, None), now), "no estimate");
+        let active = SlotView { status: Status::Active, ..cooling(0.1, true) };
+        assert!(!near_ready(&active, now));
     }
 
     #[test]
