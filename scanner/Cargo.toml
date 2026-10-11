@@ -1,0 +1,16 @@
+[package]
+name = "hd-scanner"
+version = "0.2.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin"
+
+[dependencies]
+base64 = "0.23.1"
+futures = "0.3.34"
+png = "0.18.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.152"
+streamdeck-rs = "0.8.0"
+tokio = { version = "1.53.2", features = ["rt", "macros", "sync", "time"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects"] }

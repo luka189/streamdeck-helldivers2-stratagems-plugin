@@ -1,0 +1,1163 @@
+//! Loadout tracking on top of the row reader: confirmation across scans, slot ownership,
+//! and the key sequences that call stratagems in.
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
+use std::sync::Mutex;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
+
+use crate::capture::{GameWindow, Grabber, Source, game_in_focus, locate};
+use crate::input;
+pub use crate::matcher::Badge;
+use crate::matcher::{Matcher, Row, column_box};
+pub use crate::status::Status;
+
+const UNSURE_FACTOR: u32 = 3; // a lookalike-close reading must top its slot this many times longer
+const MENU_TAP_MS: u64 = 60; // shorter taps of the menu key have been missed by the game
+const MENU_OPEN_ROWS: usize = 4; // the open menu lists Reinforce, SoS Beacon and Resupply plus the loadout
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Config {
+    pub auto_scan: bool,
+    pub auto_menu_scan: bool, // open the stratagem menu once when a mission starts, to read the loadout
+    pub scan_period: f64,
+    pub confirm_scans: u32,
+    pub icon_scale: f64,
+    pub resolution: String, // "auto" (the game window's size) or "WIDTHxHEIGHT", for when the window can't be measured
+    pub process_name: String,
+    pub menu_key: String,
+    pub menu_mode: String,
+    pub up: String,
+    pub down: String,
+    pub left: String,
+    pub right: String,
+    pub throw_key: String,
+    pub menu_open_delay_ms: u64,
+    pub scan_open_wait_ms: u64,
+    pub key_hold_ms: u64,
+    pub key_delay_ms: u64,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            auto_scan: true,
+            auto_menu_scan: true,
+            scan_period: 0.15,
+            confirm_scans: 2,
+            icon_scale: 1.0,
+            resolution: "auto".into(),
+            process_name: "helldivers2.exe".into(),
+            menu_key: "lctrl".into(),
+            menu_mode: "hold".into(),
+            up: "w".into(),
+            down: "s".into(),
+            left: "a".into(),
+            right: "d".into(),
+            throw_key: String::new(),
+            menu_open_delay_ms: 120,
+            scan_open_wait_ms: 350,
+            key_hold_ms: 35,
+            key_delay_ms: 40,
+        }
+    }
+}
+
+impl Config {
+    /// Parse leniently: anything missing or invalid falls back to its default.
+    pub fn from_json(v: &serde_json::Value) -> Config {
+        let d = Config::default();
+        let mut c: Config = serde_json::from_value(v.clone()).unwrap_or_default();
+        c.scan_period = if c.scan_period.is_finite() { c.scan_period.clamp(0.1, 60.0) } else { d.scan_period };
+        c.confirm_scans = c.confirm_scans.clamp(1, 10);
+        c.icon_scale = if c.icon_scale.is_finite() { c.icon_scale.clamp(0.5, 2.0) } else { 1.0 };
+        for (field, fallback) in
+            [(&mut c.menu_key, &d.menu_key), (&mut c.up, &d.up), (&mut c.down, &d.down), (&mut c.left, &d.left), (&mut c.right, &d.right)]
+        {
+            if !input::valid(field) {
+                *field = fallback.clone();
+            }
+        }
+        if !c.throw_key.is_empty() && !input::valid(&c.throw_key) {
+            c.throw_key.clear();
+        }
+        if c.menu_mode != "toggle" {
+            c.menu_mode = "hold".into();
+        }
+        c.resolution = c.resolution.trim().to_lowercase().replace(' ', "");
+        if c.game_size().is_none() {
+            c.resolution = "auto".into();
+        }
+        c.process_name = c.process_name.to_lowercase();
+        c
+    }
+
+    /// The game's size set by hand, if any: "2560x1440", within 640x360 and 7680x4320.
+    pub fn game_size(&self) -> Option<(usize, usize)> {
+        let (w, h) = self.resolution.split_once('x')?;
+        let (w, h): (usize, usize) = (w.parse().ok()?, h.parse().ok()?);
+        ((640..=7680).contains(&w) && (360..=4320).contains(&h)).then_some((w, h))
+    }
+}
+
+struct Slot {
+    index: usize,
+    score: f32,
+    sure: bool,
+    status: Status,
+    next: Option<(Status, u32)>, // a status change waiting to be seen again
+    fill: f32,                   // game progress fill when last seen (cooldown: from the bottom; active: from the top)
+    fill_at: Instant,
+    rate: Option<f32>,        // measured cooldown fill drain per second
+    cooldown_s: f32,          // wiki cooldown, the drain rate until one is measured
+    assumed: Option<Instant>, // shown active after a call-in, not yet confirmed on screen
+    badge: Option<Badge>,
+    challenger: Option<(usize, u32)>, // a different stratagem read here, and for how many scans in a row
+    cooldown_from: Option<Instant>,   // when a cooldown was seen starting full, to learn its real length
+    seen_at: Instant,                 // last time its row was on screen
+}
+
+const TAKEOVER_SCANS: u32 = 4; // sure readings of another stratagem in a row before it takes a slot
+
+const ASSUMED_FOR: f32 = 6.0; // seconds an unconfirmed call-in keeps the key active
+const UNSEEN_GRACE: f32 = 20.0; // seconds past the estimated end before an unseen cooldown is taken as over
+// The closed HUD drops a row once its call-in has landed and only brings it back when ready again,
+// so an in-flight row gone this long (HUD still up) means its cooldown has started.
+const ACTIVE_GONE: Duration = Duration::from_millis(1500);
+
+/// What a key shows for one menu slot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlotView {
+    pub index: usize,
+    pub status: Status,
+    /// Progress fill to draw, rounded to 1/72 so repaints only happen when a key pixel row changes.
+    pub fill: f32,
+    /// The game's count badge, last time it was seen.
+    pub badge: Option<Badge>,
+}
+
+impl Slot {
+    fn new(r: &Row, cooldown_s: f32) -> Slot {
+        let mut s = Slot {
+            index: r.index,
+            score: r.score,
+            sure: r.sure,
+            status: r.status,
+            next: None,
+            fill: 0.0,
+            fill_at: Instant::now(),
+            rate: None,
+            cooldown_s,
+            assumed: None,
+            badge: r.badge.clone(),
+            challenger: None,
+            cooldown_from: None,
+            seen_at: Instant::now(),
+        };
+        s.observe_fill(r);
+        s
+    }
+
+    /// Record the fill just read; two cooldown readings a few seconds apart give the real drain rate
+    /// (ship upgrades shorten cooldowns, so the wiki figure is only a fallback).
+    fn observe_fill(&mut self, r: &Row) {
+        let now = Instant::now();
+        match self.status {
+            Status::Cooldown => {
+                let dt = now.duration_since(self.fill_at).as_secs_f32();
+                let drop = self.fill - r.fill_bottom;
+                if dt >= 3.0 && drop > 0.0 && drop < 0.5 {
+                    // ship upgrades shorten cooldowns, but not beyond these bounds of the wiki figure
+                    let wiki = 1.0 / self.cooldown_s.max(1.0);
+                    self.rate = Some((drop / dt).clamp(wiki * 0.5, wiki * 2.0));
+                }
+                if dt >= 3.0 || self.fill == 0.0 || r.fill_bottom > self.fill {
+                    (self.fill, self.fill_at) = (r.fill_bottom, now);
+                }
+            }
+            Status::Active => (self.fill, self.fill_at) = (r.fill_top, now),
+            _ => (self.fill, self.fill_at) = (0.0, now),
+        }
+    }
+
+    fn view(&self) -> SlotView {
+        let mut v = self.view_state();
+        // no uses left: the game drops the badge, and so do we
+        v.badge = if v.status == Status::Unavailable { None } else { self.badge.clone() };
+        v
+    }
+
+    fn view_state(&self) -> SlotView {
+        let q = |f: f32| (f.clamp(0.0, 1.0) * 72.0).round() / 72.0;
+        let v = |status, fill| SlotView { index: self.index, status, fill, badge: None };
+        match self.status {
+            Status::Cooldown => {
+                // the end of a cooldown is a sliver too thin to measure, so the estimate only draws the
+                // fill; the key unlocks when the game shows it ready, or long after the estimated end
+                // if that moment went unseen
+                let rate = self.rate.unwrap_or(1.0 / self.cooldown_s.max(1.0));
+                let since = self.fill_at.elapsed().as_secs_f32();
+                if since > self.fill / rate.max(1e-4) + UNSEEN_GRACE {
+                    v(Status::Ready, 0.0)
+                } else {
+                    v(self.status, q(self.fill - rate * since).max(1.0 / 72.0))
+                }
+            }
+            // a call-in the game never showed (refused, or typed into a vehicle) stops blocking the key
+            Status::Active if self.assumed.is_some_and(|t| t.elapsed().as_secs_f32() > ASSUMED_FOR) => v(Status::Ready, 0.0),
+            Status::Active => v(self.status, q(self.fill)),
+            Status::Unavailable => v(self.status, 1.0),
+            _ => v(self.status, 0.0),
+        }
+    }
+
+    /// A status sticks once read on `need` scans in a row; Unknown (row without a status line) never overrides.
+    fn note(&mut self, st: Status, need: u32) -> bool {
+        if st != Status::Unknown {
+            self.assumed = None;
+        }
+        if st == Status::Unknown || st == self.status {
+            self.next = None;
+            return false;
+        }
+        let n = match self.next {
+            Some((s, n)) if s == st => n + 1,
+            _ => 1,
+        };
+        if n >= need {
+            self.status = st;
+            self.next = None;
+            (self.fill, self.rate) = (0.0, None);
+            true
+        } else {
+            self.next = Some((st, n));
+            false
+        }
+    }
+}
+
+pub struct Engine {
+    pub matcher: Matcher,
+    grabber: Grabber,
+    slots: BTreeMap<usize, Slot>, // menu slot -> what it holds
+    pending: HashMap<(usize, usize), u32>,
+    learned: HashMap<usize, f32>, // stratagem -> cooldown seconds measured this session
+    pub focused: bool,
+    pub scan_ms: f64,
+    pub last_error: Option<String>,       // why the last scan could not read the game
+    pub source: Option<Source>,           // how the game's position was found in the last scan
+    pub measured: Option<(usize, usize)>, // the game's size as found in the last scan, before any size set by hand
+    last_hud: Option<Instant>,            // last time any stratagem row was on screen
+}
+
+/// What the game is doing, as far as the screen tells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GameState {
+    Missing, // not running, or its window cannot be read
+    Lobby,   // on screen, but no stratagem HUD: ship, menus, loading
+    Mission, // the stratagem HUD is showing (Reinforce is always listed in a mission)
+}
+
+const HUD_GRACE: Duration = Duration::from_secs(3); // loading flickers and menus hide the HUD briefly
+// Without the HUD this long, the mission is over: forget the loadout. Long enough to survive a map
+// check or a death camera, which also hide it.
+const LOBBY_RESET: Duration = Duration::from_secs(10);
+
+static FIRING: Mutex<()> = Mutex::new(());
+
+impl Engine {
+    pub fn new(data: &Path) -> Result<Engine, String> {
+        Ok(Engine {
+            matcher: Matcher::load(data)?,
+            grabber: Grabber::new(),
+            slots: BTreeMap::new(),
+            pending: HashMap::new(),
+            learned: HashMap::new(),
+            focused: false,
+            scan_ms: 0.0,
+            last_error: None,
+            source: None,
+            measured: None,
+            last_hud: None,
+        })
+    }
+
+    /// What each menu slot shows, up to the last known slot; None = slot not read yet.
+    pub fn loadout(&self) -> Vec<Option<SlotView>> {
+        let len = self.slots.keys().next_back().map_or(0, |k| k + 1);
+        (0..len).map(|k| self.slots.get(&k).map(Slot::view)).collect()
+    }
+
+    /// Cooldown length: as last measured this session, otherwise the wiki figure.
+    fn cooldown_s(&self, index: usize) -> f32 {
+        if let Some(&s) = self.learned.get(&index) {
+            return s;
+        }
+        let c = &self.matcher.catalog[index].cooldown;
+        c.trim_end_matches('s').trim().parse().unwrap_or(180.0)
+    }
+
+    pub fn game_state(&self) -> GameState {
+        if !self.focused {
+            GameState::Missing
+        } else if self.last_hud.is_some_and(|t| t.elapsed() < HUD_GRACE) {
+            GameState::Mission
+        } else {
+            GameState::Lobby
+        }
+    }
+
+    /// Right after calling a stratagem in: show it as active until the screen says otherwise.
+    pub fn mark_called(&mut self, index: usize) -> bool {
+        match self.slots.values_mut().find(|s| s.index == index) {
+            Some(s) if s.status != Status::Active => {
+                (s.status, s.next, s.fill, s.fill_at) = (Status::Active, None, 0.0, Instant::now());
+                s.assumed = Some(Instant::now());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.slots.clear();
+        self.pending.clear();
+        self.matcher.reset();
+    }
+
+    /// The game window, only if it is the one receiving keyboard input.
+    fn game_focused(cfg: &Config) -> Option<GameWindow> {
+        locate(&cfg.process_name).filter(|_| game_in_focus(&cfg.process_name))
+    }
+
+    /// Reads wherever the game window is on screen, focused or not; it only has to be visible.
+    fn read(&mut self, cfg: &Config) -> Result<Vec<Row>, String> {
+        let mut fg =
+            locate(&cfg.process_name).ok_or_else(|| format!("game not running: {}", crate::capture::diagnose(&cfg.process_name)))?;
+        self.source = Some(fg.source);
+        self.measured = Some((fg.w, fg.h));
+        // a size set by hand wins: when the window is hidden from us, the fallbacks can only guess it
+        if let Some((w, h)) = cfg.game_size() {
+            (fg.w, fg.h) = (w, h);
+        }
+        let (x0, y0, x1, y1) = column_box(fg.w, fg.h, cfg.icon_scale);
+        let col = self.grabber.grab(fg.x + x0 as i32, fg.y + y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32)?;
+        Ok(self.matcher.read_rows(&col, fg.h, (x0, y0), cfg.icon_scale))
+    }
+
+    /// Fill a slot. A different stratagem replaces the current one with a better reading, or when it
+    /// keeps reading surely for TAKEOVER_SCANS in a row: objective stratagems change in place during a
+    /// mission (SSSD Delivery becomes Upload Data). An unsure reading never replaces a sure one.
+    /// Returns whether the loadout changed.
+    fn set_slot(&mut self, r: &Row) -> bool {
+        if let Some(cur) = self.slots.get_mut(&r.slot) {
+            if cur.index == r.index {
+                cur.score = cur.score.max(r.score);
+                cur.sure |= r.sure;
+                cur.challenger = None;
+                return false;
+            }
+            let streak = match cur.challenger {
+                Some((i, n)) if i == r.index => n + 1,
+                _ => 1,
+            };
+            cur.challenger = Some((r.index, streak));
+            let takes_over = r.sure && streak >= TAKEOVER_SCANS;
+            if (cur.sure, cur.score) >= (r.sure, r.score) && !takes_over {
+                return false;
+            }
+        }
+        let cooldown_s = self.cooldown_s(r.index);
+        self.slots.retain(|_, s| s.index != r.index);
+        self.slots.insert(r.slot, Slot::new(r, cooldown_s));
+        true
+    }
+
+    /// Update status and progress of slots whose row was just seen holding the stratagem we already know.
+    fn note_statuses(&mut self, rows: &[Row], need: u32) -> bool {
+        let mut changed = false;
+        for r in rows {
+            if let Some(s) = self.slots.get_mut(&r.slot).filter(|s| s.index == r.index) {
+                s.seen_at = Instant::now();
+                let before = s.status;
+                changed |= s.note(r.status, need);
+                if r.status == s.status {
+                    s.observe_fill(r);
+                }
+                // learn the real cooldown from one seen whole: ship upgrades make it shorter than the wiki's
+                match (before, s.status) {
+                    (b, Status::Cooldown) if b != Status::Cooldown => {
+                        s.cooldown_from = (r.fill_bottom >= 0.9).then(Instant::now);
+                    }
+                    (Status::Cooldown, Status::Ready) => {
+                        if let Some(t) = s.cooldown_from.take() {
+                            let secs = t.elapsed().as_secs_f32();
+                            if secs > 5.0 {
+                                self.learned.insert(s.index, secs);
+                                s.cooldown_s = secs;
+                                s.rate = None;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                if r.badge.is_some() && r.badge != s.badge {
+                    s.badge = r.badge.clone();
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    /// One auto-scan step. Every reading must repeat on consecutive scans before it counts:
+    /// rows sliding in or out pass through neighbouring slot positions for a frame or two.
+    pub fn scan(&mut self, cfg: &Config) -> bool {
+        let t = Instant::now();
+        let rows = match self.read(cfg) {
+            Ok(rows) => rows,
+            Err(e) => {
+                self.focused = false;
+                self.last_error = Some(e);
+                return false;
+            }
+        };
+        self.update(&rows, cfg, t)
+    }
+
+    /// The scan step once the rows are read (`t`: when the scan started); apart so tests can feed rows.
+    fn update(&mut self, rows: &[Row], cfg: &Config, t: Instant) -> bool {
+        self.focused = true;
+        self.last_error = None;
+        if !rows.is_empty() {
+            self.last_hud = Some(Instant::now());
+        } else if self.last_hud.is_some_and(|t| t.elapsed() > LOBBY_RESET) && !self.slots.is_empty() {
+            self.clear();
+            return true;
+        }
+        self.scan_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let seen: HashMap<(usize, usize), &Row> = rows.iter().map(|r| ((r.slot, r.index), r)).collect();
+        self.pending.retain(|k, _| seen.contains_key(k));
+        let mut changed = false;
+        for (key, r) in &seen {
+            let n = self.pending.entry(*key).or_default();
+            *n += 1;
+            let need = cfg.confirm_scans * if r.sure { 1 } else { UNSURE_FACTOR };
+            if *n >= need {
+                changed |= self.set_slot(r);
+            }
+        }
+        changed |= self.note_statuses(rows, cfg.confirm_scans);
+        if !rows.is_empty() {
+            for s in self.slots.values_mut() {
+                if s.status == Status::Active && s.assumed.is_none() && s.seen_at.elapsed() > ACTIVE_GONE {
+                    (s.status, s.next, s.fill, s.fill_at, s.rate) = (Status::Cooldown, None, 1.0, s.seen_at, None);
+                    s.cooldown_from = Some(s.seen_at);
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    /// Open the menu if it is closed, read it, and put the menu back as it was.
+    pub fn scan_menu(&mut self, cfg: &Config) -> Result<bool, String> {
+        if Engine::game_focused(cfg).is_none() {
+            return Err("game not in focus; the menu key would go to another window".into());
+        }
+        let _busy = FIRING.try_lock().map_err(|_| "busy entering a stratagem")?;
+        let wait = Duration::from_millis(cfg.menu_open_delay_ms + cfg.scan_open_wait_ms);
+        let before = self.read(cfg)?;
+        let reads = if cfg.menu_mode == "hold" {
+            input::down(&cfg.menu_key)?;
+            sleep(wait);
+            let after = self.read(cfg);
+            input::up(&cfg.menu_key)?;
+            vec![before, after?]
+        } else {
+            let hold = cfg.key_hold_ms.max(MENU_TAP_MS);
+            input::tap(&cfg.menu_key, hold)?;
+            sleep(wait);
+            let after = self.read(cfg)?;
+            if after.len() < before.len() {
+                // it was already open and the tap closed it: reopen, keep the earlier read
+                sleep(Duration::from_millis(100));
+                input::tap(&cfg.menu_key, hold)?;
+                vec![before]
+            } else {
+                // the game has been seen to ignore the closing tap: check, and tap again if still open
+                input::tap(&cfg.menu_key, hold)?;
+                for _ in 0..2 {
+                    sleep(Duration::from_millis(400));
+                    if self.read(cfg)?.len() < MENU_OPEN_ROWS {
+                        break;
+                    }
+                    input::tap(&cfg.menu_key, hold)?;
+                }
+                vec![before, after]
+            }
+        };
+        let mut changed = false;
+        for r in reads.iter().flatten().filter(|r| r.sure) {
+            changed |= self.set_slot(r);
+        }
+        for rows in &reads {
+            changed |= self.note_statuses(rows, 1);
+        }
+        Ok(changed)
+    }
+}
+
+/// The bound key for each arrow of a code ("UDRL..."); any other character is skipped.
+fn code_keys<'a>(code: &'a str, cfg: &'a Config) -> impl Iterator<Item = &'a str> {
+    code.chars().filter_map(move |c| match c {
+        'U' => Some(cfg.up.as_str()),
+        'D' => Some(cfg.down.as_str()),
+        'L' => Some(cfg.left.as_str()),
+        'R' => Some(cfg.right.as_str()),
+        _ => None,
+    })
+}
+
+/// Enter a stratagem's code ("UDRL..."). Does not need the engine, so scanning carries on meanwhile.
+pub fn fire(code: &str, cfg: &Config) -> Result<(), String> {
+    if Engine::game_focused(cfg).is_none() {
+        let (pid, name) = crate::capture::foreground_owner();
+        let game = locate(&cfg.process_name).map_or("not found".to_string(), |g| format!("pid {} via {:?}", g.pid, g.source));
+        return Err(format!("game not in focus: foreground is {name} (pid {pid}), game {game}"));
+    }
+    let _busy = FIRING.try_lock().map_err(|_| "busy entering a stratagem")?;
+    let gap = Duration::from_millis(cfg.key_delay_ms);
+    if cfg.menu_mode == "hold" {
+        input::down(&cfg.menu_key)?;
+    } else {
+        input::tap(&cfg.menu_key, cfg.key_hold_ms)?;
+    }
+    sleep(Duration::from_millis(cfg.menu_open_delay_ms));
+    let mut result = Ok(());
+    for key in code_keys(code, cfg) {
+        if let Err(e) = input::tap(key, cfg.key_hold_ms) {
+            result = Err(e);
+            break;
+        }
+        sleep(gap);
+    }
+    if cfg.menu_mode == "hold" {
+        input::up(&cfg.menu_key)?;
+    }
+    result?;
+    if !cfg.throw_key.is_empty() {
+        sleep(gap * 2);
+        input::tap(&cfg.throw_key, cfg.key_hold_ms)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Slot logic driven through `update` with hand-made rows. Waits are simulated by moving the
+    //! slot's timestamps into the past, so nothing here sleeps.
+
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::img::Img;
+
+    fn data() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../data")
+    }
+
+    fn engine() -> Engine {
+        Engine::new(&data()).expect("engine loads the catalog")
+    }
+
+    fn idx(e: &Engine, name: &str) -> usize {
+        e.matcher.catalog.iter().position(|s| s.name == name).unwrap_or_else(|| panic!("{name} not in the catalog"))
+    }
+
+    fn row(index: usize, slot: usize, status: Status) -> Row {
+        Row { index, score: 0.95, sure: true, slot, status, fill_bottom: 0.0, fill_top: 0.0, badge: None }
+    }
+
+    fn badge(hash: u64) -> Badge {
+        Badge { hash, w: 1, h: 1, bits: Arc::new(vec![true]) }
+    }
+
+    /// An instant `secs` seconds ago.
+    fn ago(secs: f32) -> Instant {
+        Instant::now().checked_sub(Duration::from_secs_f32(secs)).expect("system uptime shorter than the simulated wait")
+    }
+
+    fn feed(e: &mut Engine, rows: &[Row]) -> bool {
+        e.update(rows, &Config::default(), Instant::now())
+    }
+
+    /// Feed the same rows `n` times; whether the last scan changed the loadout.
+    fn feed_n(e: &mut Engine, rows: &[Row], n: usize) -> bool {
+        (0..n).map(|_| feed(e, rows)).last().unwrap_or(false)
+    }
+
+    fn view(e: &Engine, slot: usize) -> SlotView {
+        e.loadout().get(slot).cloned().flatten().unwrap_or_else(|| panic!("slot {slot} empty"))
+    }
+
+    fn names(e: &Engine) -> Vec<String> {
+        e.loadout().iter().map(|v| v.as_ref().map_or("-".to_string(), |v| e.matcher.catalog[v.index].name.clone())).collect()
+    }
+
+    fn cfg_debug(v: serde_json::Value) -> String {
+        format!("{:?}", Config::from_json(&v))
+    }
+
+    // ---- Config::from_json ----
+
+    #[test]
+    fn config_defaults() {
+        let d = Config::default();
+        assert!(d.auto_scan && d.auto_menu_scan);
+        assert_eq!((d.scan_period, d.confirm_scans, d.icon_scale), (0.15, 2, 1.0));
+        assert_eq!(d.process_name, "helldivers2.exe");
+        assert_eq!((d.menu_key.as_str(), d.menu_mode.as_str()), ("lctrl", "hold"));
+        assert_eq!([d.up.as_str(), d.down.as_str(), d.left.as_str(), d.right.as_str()], ["w", "s", "a", "d"]);
+        assert_eq!(d.throw_key, "");
+        assert_eq!((d.menu_open_delay_ms, d.scan_open_wait_ms, d.key_hold_ms, d.key_delay_ms), (120, 350, 35, 40));
+        for key in [&d.menu_key, &d.up, &d.down, &d.left, &d.right] {
+            assert!(input::valid(key), "default key {key} is not a valid key name");
+        }
+    }
+
+    #[test]
+    fn config_empty_or_not_an_object_is_default() {
+        let d = format!("{:?}", Config::default());
+        for v in [json!({}), json!(null), json!([1, 2]), json!("lctrl"), json!(3)] {
+            assert_eq!(cfg_debug(v.clone()), d, "{v}");
+        }
+    }
+
+    #[test]
+    fn config_reads_every_field() {
+        let c = Config::from_json(&json!({
+            "auto_scan": false,
+            "auto_menu_scan": false,
+            "scan_period": 0.5,
+            "confirm_scans": 3,
+            "icon_scale": 1.25,
+            "resolution": "1920x1080",
+            "process_name": "HellDivers2.EXE",
+            "menu_key": "mouse4",
+            "menu_mode": "toggle",
+            "up": "up",
+            "down": "down",
+            "left": "left",
+            "right": "right",
+            "throw_key": "mouse1",
+            "menu_open_delay_ms": 200,
+            "scan_open_wait_ms": 500,
+            "key_hold_ms": 50,
+            "key_delay_ms": 60
+        }));
+        assert!(!c.auto_scan && !c.auto_menu_scan);
+        assert_eq!((c.scan_period, c.confirm_scans, c.icon_scale), (0.5, 3, 1.25));
+        assert_eq!(c.game_size(), Some((1920, 1080)));
+        assert_eq!(c.process_name, "helldivers2.exe", "process name is lowercased");
+        assert_eq!((c.menu_key.as_str(), c.menu_mode.as_str(), c.throw_key.as_str()), ("mouse4", "toggle", "mouse1"));
+        assert_eq!([c.up.as_str(), c.down.as_str(), c.left.as_str(), c.right.as_str()], ["up", "down", "left", "right"]);
+        assert_eq!((c.menu_open_delay_ms, c.scan_open_wait_ms, c.key_hold_ms, c.key_delay_ms), (200, 500, 50, 60));
+    }
+
+    #[test]
+    fn config_missing_fields_keep_their_default() {
+        let c = Config::from_json(&json!({ "menu_key": "f1", "unknown_field": 7 }));
+        let d = Config::default();
+        assert_eq!(c.menu_key, "f1");
+        assert_eq!(format!("{:?}", Config { menu_key: d.menu_key.clone(), ..c }), format!("{d:?}"));
+    }
+
+    #[test]
+    fn config_clamps_numbers() {
+        let c = |v| Config::from_json(&v);
+        assert_eq!(c(json!({ "scan_period": 0.01 })).scan_period, 0.1);
+        assert_eq!(c(json!({ "scan_period": -3.0 })).scan_period, 0.1);
+        assert_eq!(c(json!({ "scan_period": 600.0 })).scan_period, 60.0);
+        assert_eq!(c(json!({ "confirm_scans": 0 })).confirm_scans, 1);
+        assert_eq!(c(json!({ "confirm_scans": 50 })).confirm_scans, 10);
+        assert_eq!(c(json!({ "icon_scale": 0.1 })).icon_scale, 0.5);
+        assert_eq!(c(json!({ "icon_scale": 9.0 })).icon_scale, 2.0);
+    }
+
+    #[test]
+    fn config_bad_key_names_fall_back_one_by_one() {
+        let c = Config::from_json(&json!({
+            "menu_key": "hyper",
+            "up": "W",
+            "down": "",
+            "left": "mouse9",
+            "right": "ctrl+d",
+            "throw_key": "nope",
+            "key_hold_ms": 77
+        }));
+        assert_eq!([c.menu_key.as_str(), c.up.as_str(), c.down.as_str(), c.left.as_str(), c.right.as_str()], ["lctrl", "w", "s", "a", "d"]);
+        assert_eq!(c.throw_key, "", "an invalid throw key is dropped");
+        assert_eq!(c.key_hold_ms, 77, "valid fields next to invalid key names are kept");
+    }
+
+    #[test]
+    fn config_resolution_is_auto_or_a_sane_size() {
+        let c = |v: &str| Config::from_json(&json!({ "resolution": v }));
+        assert_eq!(Config::default().resolution, "auto");
+        assert_eq!(Config::default().game_size(), None);
+        for (given, want, size) in [
+            ("2560x1440", "2560x1440", Some((2560, 1440))),
+            (" 1920 X 1080 ", "1920x1080", Some((1920, 1080))),
+            ("3840x2160", "3840x2160", Some((3840, 2160))),
+            ("auto", "auto", None),
+            ("", "auto", None),
+            ("1080p", "auto", None),
+            ("100x100", "auto", None),
+            ("99999x1440", "auto", None),
+            ("2560x", "auto", None),
+            ("x1440", "auto", None),
+            ("-2560x1440", "auto", None),
+        ] {
+            let cfg = c(given);
+            assert_eq!((cfg.resolution.as_str(), cfg.game_size()), (want, size), "{given:?}");
+        }
+    }
+
+    #[test]
+    fn config_menu_mode_is_hold_unless_toggle() {
+        for (given, want) in [("toggle", "toggle"), ("hold", "hold"), ("press", "hold"), ("Toggle", "hold"), ("", "hold")] {
+            assert_eq!(Config::from_json(&json!({ "menu_mode": given })).menu_mode, want, "{given}");
+        }
+    }
+
+    /// A field of the wrong JSON type fails the whole parse, so every field, valid ones included,
+    /// falls back to its default (current behaviour of `unwrap_or_default` on the whole struct).
+    #[test]
+    fn config_a_wrongly_typed_field_resets_every_field() {
+        let d = format!("{:?}", Config::default());
+        assert_eq!(cfg_debug(json!({ "confirm_scans": "3", "menu_key": "f1" })), d);
+        assert_eq!(cfg_debug(json!({ "key_hold_ms": -5, "menu_key": "f1" })), d);
+        assert_eq!(cfg_debug(json!({ "auto_scan": "yes", "menu_key": "f1" })), d);
+        assert_eq!(cfg_debug(json!({ "scan_period": null, "menu_key": "f1" })), d);
+    }
+
+    // ---- code_keys ----
+
+    #[test]
+    fn code_keys_follow_the_bindings() {
+        let mut cfg = Config::default();
+        assert_eq!(code_keys("UDLR", &cfg).collect::<Vec<_>>(), ["w", "s", "a", "d"]);
+        assert_eq!(code_keys("RRU", &cfg).collect::<Vec<_>>(), ["d", "d", "w"]);
+        assert_eq!(code_keys("", &cfg).count(), 0);
+        assert_eq!(code_keys("U x-D\n", &cfg).collect::<Vec<_>>(), ["w", "s"], "other characters are skipped");
+        assert_eq!(code_keys("udlr", &cfg).count(), 0, "lowercase letters are not arrows");
+        (cfg.up, cfg.down, cfg.left, cfg.right) = ("up".into(), "down".into(), "left".into(), "right".into());
+        assert_eq!(code_keys("LDRDRDU", &cfg).collect::<Vec<_>>(), ["left", "down", "right", "down", "right", "down", "up"]);
+    }
+
+    #[test]
+    fn every_catalog_code_maps_to_one_key_per_arrow() {
+        let e = engine();
+        let cfg = Config::default();
+        for s in &e.matcher.catalog {
+            let keys: Vec<&str> = code_keys(&s.code, &cfg).collect();
+            assert_eq!(keys.len(), s.code.len(), "{}: {}", s.name, s.code);
+            assert!(keys.iter().all(|k| input::valid(k)));
+        }
+    }
+
+    // ---- cooldown lengths ----
+
+    #[test]
+    fn cooldown_from_the_catalog_with_fallback() {
+        let mut e = engine();
+        for (name, secs) in
+            [("Orbital Laser", 300.0), ("Eagle Airstrike", 15.0), ("Resupply", 180.0), ("Reinforce", 0.0), ("Upload Data", 180.0)]
+        {
+            assert_eq!(e.cooldown_s(idx(&e, name)), secs, "{name}");
+        }
+        for i in 0..e.matcher.catalog.len() {
+            let s = e.cooldown_s(i);
+            assert!(s.is_finite() && s >= 0.0, "{}: {s}", e.matcher.catalog[i].name);
+        }
+        let laser = idx(&e, "Orbital Laser");
+        e.learned.insert(laser, 42.0);
+        assert_eq!(e.cooldown_s(laser), 42.0, "a measured cooldown wins over the wiki figure");
+    }
+
+    // ---- confirmation across scans ----
+
+    #[test]
+    fn a_sure_row_needs_confirm_scans_in_a_row() {
+        let mut e = engine();
+        let r = [row(idx(&e, "Reinforce"), 0, Status::Ready)];
+        assert!(!feed(&mut e, &r));
+        assert!(e.loadout().is_empty(), "one scan is not enough with confirm_scans = 2");
+        assert!(feed(&mut e, &r));
+        assert_eq!(names(&e), ["Reinforce"]);
+        assert!(!feed(&mut e, &r), "seeing the same loadout again changes nothing");
+    }
+
+    #[test]
+    fn confirm_scans_of_one_takes_the_first_reading() {
+        let mut e = engine();
+        let cfg = Config { confirm_scans: 1, ..Config::default() };
+        assert!(e.update(&[row(idx(&e, "Reinforce"), 0, Status::Ready)], &cfg, Instant::now()));
+        assert_eq!(names(&e), ["Reinforce"]);
+    }
+
+    #[test]
+    fn an_unsure_row_needs_three_times_as_many_scans() {
+        let mut e = engine();
+        let r = [Row { sure: false, ..row(idx(&e, "Reinforce"), 0, Status::Ready) }];
+        feed_n(&mut e, &r, 5);
+        assert!(e.loadout().is_empty());
+        assert!(feed(&mut e, &r));
+        assert_eq!(names(&e), ["Reinforce"]);
+    }
+
+    #[test]
+    fn a_missed_scan_restarts_the_count() {
+        let mut e = engine();
+        let r = [row(idx(&e, "Reinforce"), 0, Status::Ready)];
+        feed(&mut e, &r);
+        feed(&mut e, &[]);
+        feed(&mut e, &r);
+        assert!(e.loadout().is_empty(), "the row was not seen on consecutive scans");
+        feed(&mut e, &r);
+        assert_eq!(names(&e), ["Reinforce"]);
+    }
+
+    #[test]
+    fn a_status_change_needs_confirming_and_unknown_never_overrides() {
+        let mut e = engine();
+        let laser = idx(&e, "Orbital Laser");
+        feed_n(&mut e, &[row(laser, 3, Status::Ready)], 2);
+        let cooling = [Row { fill_bottom: 0.5, ..row(laser, 3, Status::Cooldown) }];
+        assert!(!feed(&mut e, &cooling));
+        assert_eq!(view(&e, 3).status, Status::Ready);
+        assert!(feed(&mut e, &cooling));
+        assert_eq!(view(&e, 3).status, Status::Cooldown);
+        for _ in 0..5 {
+            assert!(!feed(&mut e, &[row(laser, 3, Status::Unknown)]));
+        }
+        assert_eq!(view(&e, 3).status, Status::Cooldown);
+        // a change seen once, then the old status again, does not stick
+        feed(&mut e, &[row(laser, 3, Status::Unavailable)]);
+        feed(&mut e, &cooling);
+        feed(&mut e, &[row(laser, 3, Status::Unavailable)]);
+        assert_eq!(view(&e, 3).status, Status::Cooldown);
+    }
+
+    // ---- slot ownership ----
+
+    #[test]
+    fn loadout_lists_slots_up_to_the_last_known_one() {
+        let mut e = engine();
+        assert!(e.loadout().is_empty());
+        let (reinforce, laser) = (idx(&e, "Reinforce"), idx(&e, "Orbital Laser"));
+        feed_n(&mut e, &[row(reinforce, 0, Status::Ready), row(laser, 3, Status::Ready)], 2);
+        let l = e.loadout();
+        assert_eq!(l.len(), 4);
+        assert_eq!(l.iter().map(Option::is_some).collect::<Vec<_>>(), [true, false, false, true]);
+        assert_eq!((view(&e, 0).index, view(&e, 3).index), (reinforce, laser));
+        assert_eq!((view(&e, 0).fill, view(&e, 3).fill), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_stratagem_seen_in_another_slot_moves_there() {
+        let mut e = engine();
+        let laser = idx(&e, "Orbital Laser");
+        feed_n(&mut e, &[row(laser, 3, Status::Ready)], 2);
+        feed_n(&mut e, &[row(laser, 4, Status::Ready)], 2);
+        assert_eq!(names(&e), ["-", "-", "-", "-", "Orbital Laser"]);
+    }
+
+    #[test]
+    fn another_sure_stratagem_takes_a_slot_after_four_scans() {
+        let mut e = engine();
+        let (sssd, upload) = (idx(&e, "SSSD Delivery"), idx(&e, "Upload Data"));
+        feed_n(&mut e, &[row(sssd, 5, Status::Ready)], 2);
+        let challenger = [Row { score: 0.90, ..row(upload, 5, Status::Ready) }];
+        // pending reaches confirm_scans on the 2nd scan; the challenger streak then needs 4 sure readings
+        for scan in 1..=4 {
+            assert!(!feed(&mut e, &challenger), "scan {scan}");
+            assert_eq!(view(&e, 5).index, sssd, "scan {scan}");
+        }
+        assert!(feed(&mut e, &challenger));
+        assert_eq!(view(&e, 5).index, upload);
+    }
+
+    #[test]
+    fn a_better_reading_replaces_an_unsure_one_at_once() {
+        let mut e = engine();
+        let (sssd, upload) = (idx(&e, "SSSD Delivery"), idx(&e, "Upload Data"));
+        feed_n(&mut e, &[Row { sure: false, score: 0.7, ..row(sssd, 5, Status::Ready) }], 6);
+        assert_eq!(view(&e, 5).index, sssd);
+        feed_n(&mut e, &[row(upload, 5, Status::Ready)], 2);
+        assert_eq!(view(&e, 5).index, upload);
+    }
+
+    #[test]
+    fn an_unsure_reading_never_replaces_a_sure_one() {
+        let mut e = engine();
+        let (sssd, upload) = (idx(&e, "SSSD Delivery"), idx(&e, "Upload Data"));
+        feed_n(&mut e, &[Row { score: 0.8, ..row(sssd, 5, Status::Ready) }], 2);
+        feed_n(&mut e, &[Row { sure: false, score: 0.99, ..row(upload, 5, Status::Ready) }], 20);
+        assert_eq!(view(&e, 5).index, sssd);
+    }
+
+    // ---- badges ----
+
+    #[test]
+    fn badges_follow_the_screen_and_unavailable_hides_them() {
+        let mut e = engine();
+        let laser = idx(&e, "Orbital Laser");
+        feed_n(&mut e, &[Row { badge: Some(badge(2)), ..row(laser, 3, Status::Ready) }], 2);
+        assert_eq!(view(&e, 3).badge.map(|b| b.hash), Some(2));
+        assert!(feed(&mut e, &[Row { badge: Some(badge(1)), ..row(laser, 3, Status::Ready) }]), "a new count is a change");
+        assert_eq!(view(&e, 3).badge.map(|b| b.hash), Some(1));
+        feed(&mut e, &[row(laser, 3, Status::Ready)]);
+        assert_eq!(view(&e, 3).badge.map(|b| b.hash), Some(1), "a row read without its badge keeps the last one");
+        feed_n(&mut e, &[row(laser, 3, Status::Unavailable)], 2);
+        let v = view(&e, 3);
+        assert_eq!((v.status, v.fill, v.badge), (Status::Unavailable, 1.0, None), "no uses left: no badge, full cover");
+    }
+
+    // ---- call-ins ----
+
+    #[test]
+    fn mark_called_shows_the_slot_active() {
+        let mut e = engine();
+        let (reinforce, laser) = (idx(&e, "Reinforce"), idx(&e, "Orbital Laser"));
+        feed_n(&mut e, &[row(reinforce, 0, Status::Ready), row(laser, 3, Status::Ready)], 2);
+        assert!(e.mark_called(laser));
+        assert_eq!((view(&e, 3).status, view(&e, 3).fill), (Status::Active, 0.0));
+        assert_eq!(view(&e, 0).status, Status::Ready, "other slots are untouched");
+        assert!(!e.mark_called(laser), "already active");
+        assert!(!e.mark_called(idx(&e, "Resupply")), "not in the loadout");
+    }
+
+    #[test]
+    fn a_call_in_the_game_never_shows_expires() {
+        let mut e = engine();
+        let laser = idx(&e, "Orbital Laser");
+        feed_n(&mut e, &[row(laser, 3, Status::Ready)], 2);
+        e.mark_called(laser);
+        e.slots.get_mut(&3).unwrap().assumed = Some(ago(ASSUMED_FOR - 1.0));
+        assert_eq!(view(&e, 3).status, Status::Active);
+        e.slots.get_mut(&3).unwrap().assumed = Some(ago(ASSUMED_FOR + 1.0));
+        assert_eq!((view(&e, 3).status, view(&e, 3).fill), (Status::Ready, 0.0));
+    }
+
+    #[test]
+    fn an_assumed_call_in_is_not_taken_for_a_finished_one() {
+        let mut e = engine();
+        let (reinforce, laser) = (idx(&e, "Reinforce"), idx(&e, "Orbital Laser"));
+        feed_n(&mut e, &[row(reinforce, 0, Status::Ready), row(laser, 3, Status::Ready)], 2);
+        e.mark_called(laser);
+        e.slots.get_mut(&3).unwrap().seen_at = ago(5.0);
+        feed(&mut e, &[row(reinforce, 0, Status::Ready)]);
+        assert_eq!(view(&e, 3).status, Status::Active, "still waiting for the game to show the call-in");
+        // a row without a status line does not confirm it either
+        feed(&mut e, &[row(laser, 3, Status::Unknown)]);
+        assert!(e.slots[&3].assumed.is_some());
+        // the game showing any status does
+        feed(&mut e, &[row(laser, 3, Status::Active)]);
+        assert!(e.slots[&3].assumed.is_none());
+    }
+
+    #[test]
+    fn an_active_row_gone_from_the_hud_starts_its_cooldown() {
+        let mut e = engine();
+        let (reinforce, laser) = (idx(&e, "Reinforce"), idx(&e, "Orbital Laser"));
+        let inbound = Row { fill_top: 0.6, ..row(laser, 3, Status::Active) };
+        feed_n(&mut e, &[row(reinforce, 0, Status::Ready), inbound], 2);
+        assert_eq!(view(&e, 3).status, Status::Active);
+        // gone for less than ACTIVE_GONE: still in flight
+        e.slots.get_mut(&3).unwrap().seen_at = ago(ACTIVE_GONE.as_secs_f32() - 1.0);
+        assert!(!feed(&mut e, &[row(reinforce, 0, Status::Ready)]));
+        assert_eq!(view(&e, 3).status, Status::Active);
+        // gone longer, while the HUD still shows other rows: landed, cooling down from full
+        let seen = ago(ACTIVE_GONE.as_secs_f32() + 0.5);
+        e.slots.get_mut(&3).unwrap().seen_at = seen;
+        assert!(feed(&mut e, &[row(reinforce, 0, Status::Ready)]));
+        let v = view(&e, 3);
+        assert_eq!(v.status, Status::Cooldown);
+        assert!(v.fill > 0.95, "cooldown starts full, fill {}", v.fill);
+        let s = &e.slots[&3];
+        assert_eq!((s.cooldown_from, s.fill_at, s.rate), (Some(seen), seen, None));
+    }
+
+    #[test]
+    fn an_active_row_is_not_inferred_finished_without_the_hud() {
+        let mut e = engine();
+        let laser = idx(&e, "Orbital Laser");
+        feed_n(&mut e, &[row(laser, 3, Status::Active)], 2);
+        e.slots.get_mut(&3).unwrap().seen_at = ago(ACTIVE_GONE.as_secs_f32() + 1.0);
+        assert!(!feed(&mut e, &[]), "no rows at all: map, death camera or loading, not a landing");
+        assert_eq!(view(&e, 3).status, Status::Active);
+    }
+
+    // ---- cooldown progress ----
+
+    #[test]
+    fn a_cooldown_drains_with_time_and_floors_at_one_step() {
+        let mut e = engine();
+        let laser = idx(&e, "Orbital Laser"); // 300 s on the wiki
+        feed_n(&mut e, &[Row { fill_bottom: 0.5, ..row(laser, 3, Status::Cooldown) }], 2);
+        assert!((view(&e, 3).fill - 0.5).abs() <= 1.0 / 72.0);
+        e.slots.get_mut(&3).unwrap().fill_at = ago(30.0);
+        let f = view(&e, 3).fill;
+        assert!((f - 0.4).abs() <= 1.0 / 72.0, "0.5 - 30 s / 300 s, got {f}");
+        assert_eq!((f * 72.0).fract(), 0.0, "fill is quantised to 1/72");
+        // past the estimated end (5 s at 10 s for the whole), within the grace: the thinnest sliver
+        e.slots.get_mut(&3).unwrap().cooldown_s = 10.0;
+        e.slots.get_mut(&3).unwrap().fill_at = ago(10.0);
+        assert_eq!((view(&e, 3).status, view(&e, 3).fill), (Status::Cooldown, 1.0 / 72.0));
+    }
+
+    #[test]
+    fn an_unseen_cooldown_ends_after_the_grace_period() {
+        let mut e = engine();
+        let laser = idx(&e, "Orbital Laser");
+        feed_n(&mut e, &[Row { fill_bottom: 0.5, ..row(laser, 3, Status::Cooldown) }], 2);
+        e.slots.get_mut(&3).unwrap().cooldown_s = 10.0; // ends 5 s after the reading, then UNSEEN_GRACE
+        e.slots.get_mut(&3).unwrap().fill_at = ago(5.0 + UNSEEN_GRACE - 1.0);
+        assert_eq!(view(&e, 3).status, Status::Cooldown);
+        e.slots.get_mut(&3).unwrap().fill_at = ago(5.0 + UNSEEN_GRACE + 1.0);
+        assert_eq!((view(&e, 3).status, view(&e, 3).fill), (Status::Ready, 0.0));
+    }
+
+    #[test]
+    fn the_drain_rate_is_measured_and_bounded_by_the_wiki_figure() {
+        let mut e = engine();
+        let laser = idx(&e, "Orbital Laser");
+        let at = |fill| [Row { fill_bottom: fill, ..row(laser, 3, Status::Cooldown) }];
+        feed_n(&mut e, &at(0.6), 2);
+        assert_eq!(e.slots[&3].rate, None);
+        // readings less than 3 s apart are not used
+        e.slots.get_mut(&3).unwrap().fill_at = ago(1.0);
+        feed(&mut e, &at(0.59));
+        assert_eq!(e.slots[&3].rate, None);
+        // 0.02 in 4 s: 1/200 per second, inside [wiki / 2, wiki * 2] for 300 s
+        e.slots.get_mut(&3).unwrap().fill_at = ago(4.0);
+        feed(&mut e, &at(0.58));
+        let rate = e.slots[&3].rate.expect("rate measured");
+        assert!((rate - 0.005).abs() < 1e-4, "{rate}");
+        assert!((e.slots[&3].fill - 0.58).abs() < 1e-6, "the newer reading becomes the reference");
+        // a drop far too fast for the wiki figure is clamped to twice the wiki rate
+        e.slots.get_mut(&3).unwrap().fill_at = ago(4.0);
+        feed(&mut e, &at(0.18));
+        let rate = e.slots[&3].rate.unwrap();
+        assert!((rate - 2.0 / 300.0).abs() < 1e-6, "{rate}");
+    }
+
+    #[test]
+    fn a_cooldown_seen_whole_teaches_its_real_length() {
+        let mut e = engine();
+        let laser = idx(&e, "Orbital Laser");
+        feed_n(&mut e, &[row(laser, 3, Status::Ready)], 2);
+        feed_n(&mut e, &[Row { fill_bottom: 0.95, ..row(laser, 3, Status::Cooldown) }], 2);
+        assert!(e.slots[&3].cooldown_from.is_some(), "a cooldown seen starting full is timed");
+        e.slots.get_mut(&3).unwrap().cooldown_from = Some(ago(30.0));
+        assert!(feed_n(&mut e, &[row(laser, 3, Status::Ready)], 2));
+        let learned = e.cooldown_s(laser);
+        assert!((learned - 30.0).abs() < 1.0, "{learned}");
+        assert!((e.slots[&3].cooldown_s - learned).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_cooldown_first_seen_half_way_is_not_timed() {
+        let mut e = engine();
+        let laser = idx(&e, "Orbital Laser");
+        feed_n(&mut e, &[row(laser, 3, Status::Ready)], 2);
+        feed_n(&mut e, &[Row { fill_bottom: 0.5, ..row(laser, 3, Status::Cooldown) }], 2);
+        assert!(e.slots[&3].cooldown_from.is_none());
+        feed_n(&mut e, &[row(laser, 3, Status::Ready)], 2);
+        assert_eq!(e.cooldown_s(laser), 300.0);
+    }
+
+    // ---- HUD presence ----
+
+    #[test]
+    fn game_state_follows_focus_and_the_hud() {
+        let mut e = engine();
+        assert_eq!(e.game_state(), GameState::Missing);
+        let reinforce = idx(&e, "Reinforce");
+        feed(&mut e, &[row(reinforce, 0, Status::Ready)]);
+        assert!(e.focused && e.last_error.is_none());
+        assert_eq!(e.game_state(), GameState::Mission);
+        e.last_hud = Some(ago(HUD_GRACE.as_secs_f32() + 1.0));
+        assert_eq!(e.game_state(), GameState::Lobby);
+        e.focused = false;
+        assert_eq!(e.game_state(), GameState::Missing);
+    }
+
+    #[test]
+    fn a_long_absence_of_the_hud_forgets_the_loadout() {
+        let mut e = engine();
+        let reinforce = idx(&e, "Reinforce");
+        feed_n(&mut e, &[row(reinforce, 0, Status::Ready)], 2);
+        e.last_hud = Some(ago(LOBBY_RESET.as_secs_f32() - 2.0));
+        assert!(!feed(&mut e, &[]));
+        assert_eq!(names(&e), ["Reinforce"], "a short gap (map, death camera) keeps the loadout");
+        e.last_hud = Some(ago(LOBBY_RESET.as_secs_f32() + 1.0));
+        assert!(feed(&mut e, &[]));
+        assert!(e.loadout().is_empty());
+        assert!(!feed(&mut e, &[]), "nothing left to forget");
+    }
+
+    #[test]
+    fn clear_forgets_slots_and_pending_readings() {
+        let mut e = engine();
+        let (reinforce, laser) = (idx(&e, "Reinforce"), idx(&e, "Orbital Laser"));
+        feed_n(&mut e, &[row(reinforce, 0, Status::Ready)], 2);
+        feed(&mut e, &[row(laser, 3, Status::Ready)]);
+        e.clear();
+        assert!(e.loadout().is_empty() && e.pending.is_empty());
+        feed(&mut e, &[row(laser, 3, Status::Ready)]);
+        assert!(e.loadout().is_empty(), "the reading before clear() does not count");
+        feed(&mut e, &[row(laser, 3, Status::Ready)]);
+        assert_eq!(names(&e), ["-", "-", "-", "Orbital Laser"]);
+    }
+
+    // ---- real frames through the engine ----
+
+    #[test]
+    fn loadout_from_real_frames() {
+        let mut e = engine();
+        let (x0, y0, x1, y1) = column_box(2560, 1440, 1.0);
+        let read = |e: &mut Engine, name: &str| {
+            let col = Img::load_png(&Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{name}.png"))).expect(name);
+            assert_eq!((col.w, col.h), (x1 - x0, y1 - y0));
+            e.matcher.read_rows(&col, 1440, (x0, y0), 1.0)
+        };
+        let open = read(&mut e, "menu_open");
+        feed_n(&mut e, &open, 2);
+        assert_eq!(
+            names(&e),
+            ["Reinforce", "SoS Beacon", "Resupply", "Orbital Laser", "LAS-99 Quasar Cannon", "LIFT-182 Warp Pack", "M-102 Gunner FRV"]
+        );
+        let statuses: Vec<Status> = e.loadout().iter().flatten().map(|v| v.status).collect();
+        use Status::*;
+        assert_eq!(statuses, [Ready, Ready, Ready, Active, Cooldown, Cooldown, Ready]);
+        // the menu closes: the closed HUD only lists Reinforce, and the Orbital Laser (impact) drops out
+        let closed = read(&mut e, "menu_closed");
+        feed(&mut e, &closed);
+        assert_eq!(view(&e, 3).status, Active);
+        assert_eq!(view(&e, 0).status, Ready, "a row without a status line keeps its status");
+        e.slots.get_mut(&3).unwrap().seen_at = ago(ACTIVE_GONE.as_secs_f32() + 0.5);
+        assert!(feed(&mut e, &closed));
+        assert_eq!(view(&e, 3).status, Cooldown);
+        assert_eq!(e.loadout().len(), 7, "slots off screen are remembered");
+    }
+}
