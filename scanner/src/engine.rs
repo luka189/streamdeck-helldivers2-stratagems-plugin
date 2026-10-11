@@ -2,7 +2,6 @@
 //! and the key sequences that call stratagems in.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
 use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -10,6 +9,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::capture::{GameWindow, Grabber, Source, game_in_focus, locate};
+use crate::data::Data;
 use crate::input;
 pub use crate::matcher::Badge;
 use crate::matcher::{Matcher, Row, column_box};
@@ -323,7 +323,7 @@ const LOBBY_RESET: Duration = Duration::from_secs(10);
 static FIRING: Mutex<()> = Mutex::new(());
 
 impl Engine {
-    pub fn new(data: &Path) -> Result<Engine, String> {
+    pub fn new(data: &Data) -> Result<Engine, String> {
         Ok(Engine {
             matcher: Matcher::load(data)?,
             grabber: Grabber::new(),
@@ -620,7 +620,7 @@ mod tests {
     //! Slot logic driven through `update` with hand-made rows. Waits are simulated by moving the
     //! slot's timestamps into the past, so nothing here sleeps.
 
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
     use serde_json::json;
@@ -633,7 +633,7 @@ mod tests {
     }
 
     fn engine() -> Engine {
-        Engine::new(&data()).expect("engine loads the catalog")
+        Engine::new(&Data::Dir(data())).expect("engine loads the catalog")
     }
 
     fn idx(e: &Engine, name: &str) -> usize {

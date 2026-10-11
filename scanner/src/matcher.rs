@@ -6,6 +6,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use crate::data::Data;
 use crate::img::Img;
 use crate::status::{self, Status, StatusReader};
 
@@ -47,6 +48,11 @@ impl Stratagem {
     pub fn png(&self) -> String {
         let stem = Path::new(&self.icon).file_stem().unwrap_or_default().to_string_lossy().into_owned();
         format!("{stem}.png")
+    }
+
+    /// Its icon's path in the data folder (see `Data`).
+    pub fn icon_path(&self) -> String {
+        format!("icons_144/{}", self.png())
     }
 }
 
@@ -190,13 +196,13 @@ pub fn column_box(w: usize, h: usize, icon_scale: f64) -> (usize, usize, usize, 
 }
 
 impl Matcher {
-    pub fn load(data: &Path) -> Result<Matcher, String> {
-        let text = std::fs::read_to_string(data.join("stratagems.json")).map_err(|e| format!("stratagems.json: {e}"))?;
-        let all: Vec<Stratagem> = serde_json::from_str(&text).map_err(|e| format!("stratagems.json: {e}"))?;
+    pub fn load(data: &Data) -> Result<Matcher, String> {
+        let text = data.read("stratagems.json")?;
+        let all: Vec<Stratagem> = serde_json::from_slice(&text).map_err(|e| format!("stratagems.json: {e}"))?;
         let mut catalog = Vec::new();
         let mut raw = Vec::new();
         for s in all {
-            let img = Img::load_png(&data.join("icons_144").join(s.png()))?;
+            let img = data.png(&s.icon_path())?;
             if img.px.iter().all(|&v| v == 0.0) {
                 continue;
             }
@@ -213,7 +219,7 @@ impl Matcher {
                 }
             }
         }
-        let status = StatusReader::load(&data.join("status"));
+        let status = StatusReader::load(data);
         Ok(Matcher { catalog, raw, low, sized: None, last: HashMap::new(), status, lookalikes })
     }
 
@@ -619,7 +625,7 @@ mod tests {
     }
 
     fn matcher() -> Matcher {
-        Matcher::load(&data()).expect("catalog")
+        Matcher::load(&Data::Dir(data())).expect("catalog")
     }
 
     fn idx(m: &Matcher, name: &str) -> usize {

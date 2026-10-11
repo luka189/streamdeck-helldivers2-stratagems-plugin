@@ -3,8 +3,7 @@
 //! Templates are greyscale cuts from 2560x1440 frames (tools/make_status_templates.py).
 //! The words are the English HUD text; other game languages need their own cuts.
 
-use std::path::Path;
-
+use crate::data::Data;
 use crate::img::Img;
 
 const BAND_Y: f64 = 34.0; // status line top, below the row's icon top
@@ -79,7 +78,8 @@ fn gray(img: &Img) -> Vec<f32> {
 }
 
 impl StatusReader {
-    pub fn load(dir: &Path) -> StatusReader {
+    /// The templates in the data's status/ folder; any missing is left out.
+    pub fn load(data: &Data) -> StatusReader {
         let table = [
             ("word_ready", Status::Ready, None, None, WORD_X),
             ("word_cooldown", Status::Cooldown, None, Some(TIMER_AFTER_COOLDOWN), WORD_X),
@@ -92,7 +92,7 @@ impl StatusReader {
             ("arrow_left", Status::Ready, Some('L'), None, ARROW_X),
             ("arrow_right", Status::Ready, Some('R'), None, ARROW_X),
         ];
-        let load = |name: &str| Img::load_png(&dir.join(format!("{name}.png"))).ok();
+        let load = |name: &str| data.png(&format!("status/{name}.png")).ok();
         let mut raw: Vec<Raw> = table
             .iter()
             .filter_map(|&(name, status, dir, timer, x)| load(name).map(|img| Raw { status, dir, timer, digit: None, x, img }))
@@ -227,7 +227,7 @@ fn near(col: &Img, t: &Template, pos: (isize, isize), slack: isize) -> (f32, isi
 mod tests {
     //! Status lines drawn from the templates themselves onto a flat background.
 
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use super::*;
 
@@ -235,6 +235,10 @@ mod tests {
 
     fn dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/status")
+    }
+
+    fn reader() -> StatusReader {
+        StatusReader::load(&Data::Dir(dir().join("..")))
     }
 
     fn template(name: &str) -> Img {
@@ -286,7 +290,7 @@ mod tests {
 
     #[test]
     fn loads_every_template() {
-        let r = StatusReader::load(&dir());
+        let r = reader();
         assert_eq!(r.raw.len(), 20);
         assert_eq!(r.raw.iter().filter(|t| t.dir.is_some()).count(), 4, "four arrows");
         assert_eq!(r.raw.iter().filter(|t| t.status == Status::Active).count(), 3, "impact, inbound and activating");
@@ -296,7 +300,7 @@ mod tests {
 
     #[test]
     fn missing_templates_read_unknown() {
-        let mut r = StatusReader::load(Path::new("no/such/dir"));
+        let mut r = StatusReader::load(&Data::Dir("no/such/dir".into()));
         let mut img = line(1.0);
         draw(&mut img, "word_ready", WORD_X, 0, 1.0);
         assert_eq!(r.read(&img, 1.0, size(1.0), TOP, (0, 0)).status, Status::Unknown);
@@ -305,7 +309,7 @@ mod tests {
 
     #[test]
     fn an_empty_line_reads_unknown() {
-        let mut r = StatusReader::load(&dir());
+        let mut r = reader();
         let img = line(1.0);
         assert_eq!(r.read(&img, 1.0, size(1.0), TOP, (0, 0)).status, Status::Unknown);
         assert_eq!(r.read_arrows(&img, 1.0, size(1.0), TOP, (0, 0), CODE_READ), "");
@@ -322,7 +326,7 @@ mod tests {
             ("word_activating", Status::Active),
         ] {
             for f in [1.0, 0.75, 1.5] {
-                let mut r = StatusReader::load(&dir());
+                let mut r = reader();
                 let mut img = line(f);
                 draw(&mut img, word, WORD_X, 0, f);
                 let Line { status: got, score, .. } = r.read(&img, f, size(f), TOP, (0, 0));
@@ -334,7 +338,7 @@ mod tests {
     #[test]
     fn a_word_off_by_the_slack_still_reads() {
         for dy in [-SLACK, SLACK] {
-            let mut r = StatusReader::load(&dir());
+            let mut r = reader();
             let mut img = line(1.0);
             draw(&mut img, "word_cooldown", WORD_X + SLACK as f64, dy, 1.0);
             assert_eq!(r.read(&img, 1.0, size(1.0), TOP, (0, 0)).status, Status::Cooldown, "dy {dy}");
@@ -345,7 +349,7 @@ mod tests {
     fn arrows_read_as_the_code_and_count_as_ready() {
         for code in ["UDRU", "DDUR", "LDRDRDU", "LLLUDRDD", "RRU"] {
             for f in [1.0, 0.75] {
-                let mut r = StatusReader::load(&dir());
+                let mut r = reader();
                 let mut img = line(f);
                 draw_code(&mut img, code, f);
                 assert_eq!(r.read_arrows(&img, f, size(f), TOP, (0, 0), CODE_READ), code, "scale {f}");
@@ -356,7 +360,7 @@ mod tests {
 
     #[test]
     fn arrow_reading_stops_at_max_and_at_the_first_gap() {
-        let mut r = StatusReader::load(&dir());
+        let mut r = reader();
         let mut img = line(1.0);
         draw_code(&mut img, "LDRDRDU", 1.0);
         assert_eq!(r.read_arrows(&img, 1.0, size(1.0), TOP, (0, 0), 3), "LDR");
@@ -369,7 +373,7 @@ mod tests {
 
     #[test]
     fn the_capture_origin_is_honoured() {
-        let mut r = StatusReader::load(&dir());
+        let mut r = reader();
         let mut full = line(1.0);
         draw_code(&mut full, "DLRD", 1.0);
         let origin = (56, 43);
@@ -396,7 +400,7 @@ mod tests {
             for (shown, secs) in [("04:50", 290), ("00:07", 7), ("12:34", 754), ("09:59", 599), ("00:00", 0), ("38:16", 2296)] {
                 for f in [1.0, 0.75, 1.5] {
                     for dx in [0.0, 2.0] {
-                        let mut r = StatusReader::load(&dir());
+                        let mut r = reader();
                         let mut img = line(f);
                         draw_timer_line(&mut img, word, after, shown, dx, f);
                         let got = r.read(&img, f, size(f), TOP, (0, 0));
@@ -410,7 +414,7 @@ mod tests {
     #[test]
     fn no_timer_without_one_on_screen_or_after_other_words() {
         let read = |word: &str, after: f64, shown: &str| {
-            let mut r = StatusReader::load(&dir());
+            let mut r = reader();
             let mut img = line(1.0);
             draw_timer_line(&mut img, word, after, shown, 0.0, 1.0);
             r.read(&img, 1.0, size(1.0), TOP, (0, 0))

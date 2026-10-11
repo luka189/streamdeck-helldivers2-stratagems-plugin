@@ -1,10 +1,13 @@
 //! Stream Deck plugin process: launched by Stream Deck, scans the game on a worker thread and
 //! keeps the keys in sync with the stratagem loadout. Writes hd2-plugin.log next to the exe.
+//! Its data (the stratagem list, the icons and the status pictures) is built into the exe: under the
+//! Elgato Marketplace's DRM a plugin cannot read its own files.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::panic::AssertUnwindSafe;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -16,7 +19,9 @@ use streamdeck_rs::{ImagePayload, LogMessagePayload, Message, MessageOut, Stream
 use tokio::sync::mpsc;
 
 use hd_scanner::capture::{Source, set_dpi_aware};
+use hd_scanner::data::Data;
 use hd_scanner::engine::{self, Config, Engine, GameState, SlotView, Status};
+use hd_scanner::matcher::Matcher;
 
 const SLOT: &str = "com.xiaodoudou.helldivers2-stratagems.slot";
 const SCAN: &str = "com.xiaodoudou.helldivers2-stratagems.rescan";
@@ -45,7 +50,12 @@ enum Event {
 struct Stratagem {
     name: String,
     code: String,
-    png: PathBuf,
+    png: Cow<'static, [u8]>, // its icon, as stored
+}
+
+/// The matcher's catalog with each stratagem's icon, read from `data`.
+fn catalog(m: &Matcher, data: &Data) -> Result<Vec<Stratagem>, String> {
+    m.catalog.iter().map(|s| Ok(Stratagem { name: s.name.clone(), code: s.code.clone(), png: data.read(&s.icon_path())? })).collect()
 }
 
 static LOG: OnceLock<(Mutex<std::fs::File>, Instant)> = OnceLock::new();
@@ -208,24 +218,25 @@ fn blank() -> String {
 const FILL: [f32; 3] = [139.0, 128.0, 112.0]; // the game's beige progress fill
 const CREAM: [f32; 3] = [240.0, 232.0, 214.0]; // glyph and edge line inside the fill
 
-/// The stratagem icon with the game's progress overlay across the whole icon, frame included:
-/// a beige fill with a cream glyph, rising from the bottom while cooling down, coming down from
-/// the top while inbound, covering it all when unavailable.
-fn icon_png(path: &Path, view: &SlotView) -> Option<Vec<u8>> {
+/// The stratagem icon (`png`, as stored) with the game's progress overlay across the whole icon,
+/// frame included: a beige fill with a cream glyph, rising from the bottom while cooling down, coming
+/// down from the top while inbound, covering it all when unavailable. With nothing to draw, the icon
+/// itself, as it is. None when it needs drawing and cannot be decoded.
+fn icon_png<'a>(png: &'a [u8], view: &SlotView) -> Option<Cow<'a, [u8]>> {
     let covered = match view.status {
         Status::Unavailable => true,
         Status::Cooldown | Status::Active => view.fill > 0.0,
         Status::Ready | Status::Unknown => false,
     };
     if !covered && view.badge.is_none() {
-        return std::fs::read(path).ok();
+        return Some(Cow::Borrowed(png));
     }
-    let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).ok()?));
+    let decoder = png::Decoder::new(std::io::Cursor::new(png));
     let mut reader = decoder.read_info().ok()?;
     let mut buf = vec![0u8; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut buf).ok()?;
     if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
-        return std::fs::read(path).ok();
+        return Some(Cow::Borrowed(png));
     }
     let (w, h) = (info.width as usize, info.height as usize);
     let px = &mut buf[..info.buffer_size()];
@@ -262,7 +273,7 @@ fn icon_png(path: &Path, view: &SlotView) -> Option<Vec<u8>> {
         enc.set_depth(png::BitDepth::Eight);
         enc.write_header().ok()?.write_image_data(px).ok()?;
     }
-    Some(out)
+    Some(Cow::Owned(out))
 }
 
 const BADGE_BG: [f32; 3] = [232.0, 229.0, 206.0];
@@ -616,7 +627,8 @@ async fn main() {
     log(format!("start pid {} port {port}", std::process::id()));
     log_job();
     end_older_instances();
-    let data = dir.join("data");
+    // built in: under the Marketplace's DRM the plugin cannot read its own files
+    let data = Data::Embedded;
 
     let socket = match StreamDeckSocket::<Value, Value, Value, Value>::connect(port, event, uuid.clone()).await {
         Ok(s) => s,
@@ -635,14 +647,13 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let catalog: Vec<Stratagem> = engine
-        .lock()
-        .unwrap()
-        .matcher
-        .catalog
-        .iter()
-        .map(|s| Stratagem { name: s.name.clone(), code: s.code.clone(), png: data.join("icons_144").join(s.png()) })
-        .collect();
+    let catalog = match catalog(&engine.lock().unwrap().matcher, &data) {
+        Ok(c) => c,
+        Err(e) => {
+            log(format!("cannot load the icons: {e}"));
+            std::process::exit(1);
+        }
+    };
     let names: Vec<String> = catalog.iter().map(|s| s.name.clone()).collect();
     log(format!("loaded {} stratagems", catalog.len()));
     let cfg = Arc::new(Mutex::new(Config::default()));
@@ -833,17 +844,20 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::sync::Arc;
 
     use super::*;
     use hd_scanner::engine::Badge;
+    use hd_scanner::img::Img;
 
     fn data() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../data")
     }
 
-    fn icon() -> PathBuf {
-        data().join("icons_144/Reinforce_Stratagem_Icon_Background.png")
+    /// Reinforce's icon, as built in.
+    fn icon() -> Cow<'static, [u8]> {
+        Data::Embedded.read("icons_144/Reinforce_Stratagem_Icon_Background.png").expect("built in")
     }
 
     fn sv(index: usize, status: Status, fill: f32, badge: Option<Badge>) -> SlotView {
@@ -990,26 +1004,45 @@ mod tests {
     }
 
     #[test]
-    fn icon_png_passes_the_file_through_when_nothing_is_drawn() {
-        let file = std::fs::read(icon()).unwrap();
+    fn icon_png_passes_the_icon_through_when_nothing_is_drawn() {
+        let file = icon();
         for v in [
             sv(0, Status::Ready, 0.0, None),
             sv(0, Status::Unknown, 0.7, None),
             sv(0, Status::Cooldown, 0.0, None),
             sv(0, Status::Active, 0.0, None),
         ] {
-            assert_eq!(icon_png(&icon(), &v).as_deref(), Some(&file[..]), "{v:?}");
+            let out = icon_png(&file, &v).expect("the icon");
+            assert!(matches!(out, Cow::Borrowed(b) if std::ptr::eq(b, &file[..])), "{v:?}: not the very same bytes");
         }
-        assert_eq!(icon_png(Path::new("no/such/icon.png"), &sv(0, Status::Ready, 0.0, None)), None);
-        assert_eq!(icon_png(Path::new("no/such/icon.png"), &sv(0, Status::Unavailable, 1.0, None)), None);
+        // a broken picture goes through when nothing is drawn on it, and gives none to draw on
+        assert_eq!(icon_png(b"not a png", &sv(0, Status::Ready, 0.0, None)).as_deref(), Some(&b"not a png"[..]));
+        assert_eq!(icon_png(b"not a png", &sv(0, Status::Unavailable, 1.0, None)), None);
         // not 8-bit RGBA: passed through untouched rather than drawn on
-        let grey = data().join("status/arrow_up.png");
-        assert_eq!(icon_png(&grey, &sv(0, Status::Cooldown, 0.5, None)), std::fs::read(&grey).ok());
+        let grey = Data::Embedded.read("status/arrow_up.png").expect("built in");
+        assert_eq!(icon_png(&grey, &sv(0, Status::Cooldown, 0.5, None)).as_deref(), Some(&grey[..]));
+    }
+
+    #[test]
+    fn the_catalog_takes_every_icon_from_the_built_in_data() {
+        let built_in = Data::Embedded;
+        let m = Matcher::load(&built_in).expect("the catalog from the built-in data");
+        let c = catalog(&m, &built_in).expect("every icon built in");
+        assert_eq!(c.len(), m.catalog.len());
+        for (s, from) in c.iter().zip(&m.catalog) {
+            assert_eq!((s.name.as_str(), s.code.as_str()), (from.name.as_str(), from.code.as_str()));
+            assert!(matches!(s.png, Cow::Borrowed(_)), "{}: built-in icons are not copied", s.name);
+            assert_eq!(&s.png[..], &std::fs::read(data().join(from.icon_path())).unwrap()[..], "{}: not the file in data/", s.name);
+            let img = Img::decode_png(&s.png).unwrap_or_else(|e| panic!("{}: {e}", s.name));
+            assert_eq!((img.w, img.h), (144, 144), "{}", s.name);
+        }
+        let Err(e) = catalog(&m, &Data::Dir("no/such/data".into())) else { panic!("found icons in a missing folder") };
+        assert!(e.contains("icons_144"), "{e}");
     }
 
     #[test]
     fn icon_png_draws_the_fill_from_the_right_end() {
-        let (w, h, src) = decode(&std::fs::read(icon()).unwrap());
+        let (w, h, src) = decode(&icon());
         let fill = FILL.map(|c| c as u8);
         let cream = CREAM.map(|c| c as u8);
         // (status, fill, rows covered, rows that must stay untouched; the edge line takes a row more)
@@ -1039,7 +1072,7 @@ mod tests {
 
     #[test]
     fn icon_png_redraws_the_badge_in_the_corner() {
-        let (w, h, src) = decode(&std::fs::read(icon()).unwrap());
+        let (w, h, src) = decode(&icon());
         // a 3x5 block of ink stands in for a digit
         let badge = Badge { hash: 7, w: 3, h: 5, bits: Arc::new(vec![true; 15]) };
         let (_, _, px) = decode(&icon_png(&icon(), &sv(0, Status::Ready, 0.0, Some(badge))).expect("drawn"));
@@ -1157,15 +1190,14 @@ mod tests {
     #[test]
     #[ignore = "generator for docs/img/demo.gif"]
     fn demo_frames() {
-        use hd_scanner::img::Img;
-        use hd_scanner::matcher::{Matcher, column_box};
+        use hd_scanner::matcher::column_box;
 
-        let data = data();
+        let data = Data::Embedded;
         let mut m = Matcher::load(&data).expect("catalog");
         let catalog: Vec<Stratagem> = m
             .catalog
             .iter()
-            .map(|s| Stratagem { name: s.name.clone(), code: s.code.clone(), png: data.join("icons_144").join(s.png()) })
+            .map(|s| Stratagem { name: s.name.clone(), code: s.code.clone(), png: data.read(&s.icon_path()).expect("icon") })
             .collect();
         let idx = |name: &str| catalog.iter().position(|s| s.name == name).unwrap_or_else(|| panic!("no {name}"));
         let (reinforce, sos, resupply) = (idx("Reinforce"), idx("SoS Beacon"), idx("Resupply"));

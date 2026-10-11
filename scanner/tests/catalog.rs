@@ -1,8 +1,9 @@
-//! Integrity of data/stratagems.json and the icons it points to.
+//! Integrity of data/stratagems.json and the icons it points to, and of the copy built into the binaries.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use hd_scanner::data::Data;
 use hd_scanner::img::Img;
 use hd_scanner::matcher::{Matcher, Stratagem};
 use hd_scanner::status::CODE_READ;
@@ -80,7 +81,7 @@ fn every_icon_exists_as_a_144px_png_with_content() {
 
 #[test]
 fn the_matcher_keeps_every_entry_in_order() {
-    let m = Matcher::load(&data()).expect("catalog");
+    let m = Matcher::load(&Data::Dir(data())).expect("catalog");
     let names: Vec<String> = entries().into_iter().map(|s| s.name).collect();
     let loaded: Vec<String> = m.catalog.iter().map(|s| s.name.clone()).collect();
     assert_eq!(loaded, names);
@@ -96,7 +97,7 @@ fn lookalike_groups(m: &Matcher) -> Vec<Vec<String>> {
 
 #[test]
 fn entries_sharing_an_icon_are_lookalikes() {
-    let m = Matcher::load(&data()).expect("catalog");
+    let m = Matcher::load(&Data::Dir(data())).expect("catalog");
     let groups = lookalike_groups(&m);
     let group_of = |name: &str| groups.iter().position(|g| g.iter().any(|n| n == name));
     let mut by_icon: HashMap<String, Vec<String>> = HashMap::new();
@@ -126,7 +127,7 @@ fn entries_sharing_an_icon_are_lookalikes() {
 /// (or the other way round): lookalikes must have codes within that length that never fit each other.
 #[test]
 fn lookalike_codes_can_be_told_apart_by_the_code_reader() {
-    let m = Matcher::load(&data()).expect("catalog");
+    let m = Matcher::load(&Data::Dir(data())).expect("catalog");
     let code: HashMap<String, String> = m.catalog.iter().map(|s| (s.name.clone(), s.code.clone())).collect();
     for g in lookalike_groups(&m) {
         for a in &g {
@@ -137,4 +138,38 @@ fn lookalike_codes_can_be_told_apart_by_the_code_reader() {
             }
         }
     }
+}
+
+/// What the reader uses from data/: the stratagem list and every file in icons_144/ and status/.
+fn data_files() -> Vec<(String, Vec<u8>)> {
+    let mut files = vec![("stratagems.json".to_string(), std::fs::read(data().join("stratagems.json")).unwrap())];
+    for dir in ["icons_144", "status"] {
+        for entry in std::fs::read_dir(data().join(dir)).unwrap() {
+            let path = entry.unwrap().path();
+            files.push((format!("{dir}/{}", path.file_name().unwrap().to_str().unwrap()), std::fs::read(&path).unwrap()));
+        }
+    }
+    files.sort();
+    files
+}
+
+#[test]
+fn the_built_in_data_is_exactly_the_data_folder() {
+    let built_in: Vec<(String, Vec<u8>)> = Data::embedded_files().iter().map(|&(name, bytes)| (name.to_string(), bytes.to_vec())).collect();
+    let on_disk = data_files();
+    let names = |files: &[(String, Vec<u8>)]| files.iter().map(|f| f.0.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&built_in), names(&on_disk), "built in and in data/ (a new picture builds in on the next build)");
+    for ((name, a), (_, b)) in built_in.iter().zip(&on_disk) {
+        assert!(a == b, "{name}: built in differs from data/");
+    }
+    assert!(built_in.len() > 100, "{} files", built_in.len());
+}
+
+#[test]
+fn the_matcher_reads_the_same_catalog_built_in() {
+    let (built_in, on_disk) = (Matcher::load(&Data::Embedded).expect("built in"), Matcher::load(&Data::Dir(data())).expect("data/"));
+    let fields =
+        |m: &Matcher| m.catalog.iter().map(|s| (s.name.clone(), s.code.clone(), s.cooldown.clone(), s.icon.clone())).collect::<Vec<_>>();
+    assert_eq!(fields(&built_in), fields(&on_disk));
+    assert_eq!(built_in.lookalike_groups(), on_disk.lookalike_groups());
 }

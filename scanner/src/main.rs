@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use hd_scanner::data::Data;
 use hd_scanner::img::Img;
 use hd_scanner::matcher::{Matcher, column_box};
 
@@ -16,7 +17,7 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("bench") if args.len() >= 3 => bench(Path::new(&args[1]), &args[2..]),
         Some("lookalikes") if args.len() >= 2 => {
-            let m = Matcher::load(Path::new(&args[1])).unwrap_or_else(|e| {
+            let m = Matcher::load(&Data::Dir(PathBuf::from(&args[1]))).unwrap_or_else(|e| {
                 eprintln!("{e}");
                 std::process::exit(1)
             });
@@ -46,7 +47,7 @@ fn main() {
 /// game, grab, read.
 fn live(data: &Path, secs: f64, period_ms: u64) {
     hd_scanner::capture::set_dpi_aware();
-    let mut m = Matcher::load(data).unwrap_or_else(|e| {
+    let mut m = Matcher::load(&Data::Dir(data.to_path_buf())).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1)
     });
@@ -110,7 +111,7 @@ fn live(data: &Path, secs: f64, period_ms: u64) {
 
 /// Replay saved frames in order (row cache warm, like a live scan) and summarise what was read.
 fn bench(data: &Path, inputs: &[String]) {
-    let mut m = Matcher::load(data).unwrap_or_else(|e| {
+    let mut m = Matcher::load(&Data::Dir(data.to_path_buf())).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1)
     });
