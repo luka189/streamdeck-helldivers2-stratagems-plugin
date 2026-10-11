@@ -40,6 +40,21 @@ You need Windows 10 or later, the Stream Deck app 6.4 or later, and Helldivers 2
 - It reads the stratagem panel in the top-left corner, so nothing may cover it.
 - It has been tested at 2560x1440, with the game's default HUD. Other resolutions are scaled from the window's height.
 
+## Performance
+
+Measured on the development PC, with the game at 2560x1440:
+
+| | |
+|---|---|
+| One scan | About 13 ms: finding the game under 0.1 ms, capturing 9 ms, reading the rows 4 ms |
+| How often | Every 150 ms, and every 50 ms for four seconds after a call-in |
+| CPU while the game runs | About 7% of one core (734 ms of CPU time over 10 s on the ship) |
+| CPU while the game is closed | About 1% of one core: nothing is captured, the plugin only checks every two seconds whether the game has started |
+| Memory | About 64 MB |
+| Download | 1.2 MB |
+
+A scan captures only the column of stratagem icons and the start of their status lines, 332x993 pixels at 2560x1440, about 9% of the screen. The plugin keeps the game's window and process between scans instead of looking them up each time, and redraws a key only when what it shows changes. The scan period is a setting ([USAGE.md](docs/USAGE.md#all-settings)): a longer one costs less and reacts later.
+
 ## Documentation
 
 | Page | What it covers |
