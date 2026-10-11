@@ -1,0 +1,10 @@
+#!/bin/sh
+# Refuses a commit message that does not follow Conventional Commits (CONTRIBUTING.md).
+# Turn it on once per clone: git config core.hooksPath .githooks
+for py in python python3 py; do
+  if "$py" -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >/dev/null 2>&1; then
+    exec "$py" tools/commitlint.py --file "$1"
+  fi
+done
+echo "commit-msg: no Python 3.9 or later found, the message was not checked" >&2
+exit 0
