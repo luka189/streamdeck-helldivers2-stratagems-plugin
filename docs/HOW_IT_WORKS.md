@@ -59,6 +59,8 @@ The HUD tells the plugin whether a mission is on: Reinforce's row is always on s
 
 `src/bin/hd2-plugin.rs` connects to Stream Deck with the [streamdeck-rs](https://crates.io/crates/streamdeck-rs) crate. Scanning runs on its own thread and sends the loadout to the main loop whenever what a key would show changes; the main loop draws the keys. Stratagem keys are the wiki icon (a PNG) with the progress fill and the badge drawn over it. The radar, the signal icon and the start button are small SVG pictures made on the fly.
 
+The stratagem list, the icons and the status pictures are built into `hd2-plugin.exe` when it is compiled (`scanner/build.rs`), so the plugin reads no file beside itself: a plugin distributed with DRM protection, as the Elgato Marketplace does, cannot read its own files.
+
 The settings are Stream Deck's global settings of the plugin, edited on the Scan key's panel (`plugin/com.xiaodoudou.helldivers2-stratagems.sdPlugin/pi/pi.html`).
 
 Two details keep restarts clean. A new instance of the plugin ends the older ones it finds, so only the newest runs. And `build.ps1` renames the running `hd2-plugin.exe` aside instead of stopping it, then puts the new one in its place; the running plugin notices that its file changed and exits, and Stream Deck starts the new one. Stopping it by force instead makes Stream Deck count a crash, and a few of those disable the plugin.
@@ -77,7 +79,7 @@ scanner/               the Rust crate (hd-scanner)
   src/main.rs          hd-scanner, a command-line tool to replay saved frames and time live scans
   tests/fixtures/      cropped screenshots the tests read
 plugin/com.xiaodoudou.helldivers2-stratagems.sdPlugin/   the plugin folder: manifest, key images, settings panel
-data/stratagems.json   name, code, cooldown and icon of every stratagem, from the wiki
+data/stratagems.json   name, code, cooldown and icon of every stratagem, from the wiki (this file, icons_144/ and status/ are built into hd2-plugin.exe)
 data/icons_144/        the wiki icons as PNG, what the matcher compares with
 data/status/           the pictures of the status words, the arrows and the timer's digits
 data/icons_svg/        the wiki icons as downloaded, which convert_icons.py renders to data/icons_144/

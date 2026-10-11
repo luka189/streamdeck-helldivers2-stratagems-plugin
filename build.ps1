@@ -21,11 +21,10 @@ Get-ChildItem -Path "$plugin\*" -Include 'hd2-plugin.old*.exe', 'hd-plugin*.exe'
 $exe = Join-Path $plugin 'hd2-plugin.exe'
 if (Test-Path $exe) { Move-Item $exe (Join-Path $plugin ("hd2-plugin.old{0}.exe" -f (Get-Date).Ticks)) }
 Copy-Item (Join-Path $root 'scanner\target\release\hd2-plugin.exe') $plugin -Force
+# the stratagem list and pictures are built into the exe (the Marketplace's DRM keeps a plugin from reading its own
+# files); a data folder left by an older build would only hide a missing embed, so it goes
 $data = Join-Path $plugin 'data'
-New-Item -ItemType Directory -Force (Join-Path $data 'icons_144'), (Join-Path $data 'status') | Out-Null
-Copy-Item (Join-Path $root 'data\stratagems.json') $data -Force
-Copy-Item (Join-Path $root 'data\icons_144\*.png') (Join-Path $data 'icons_144') -Force
-Copy-Item (Join-Path $root 'data\status\*.png') (Join-Path $data 'status') -Force
+if (Test-Path $data) { Remove-Item -Recurse -Force $data }
 Write-Host "Built $plugin"
 
 if ($Package) {
@@ -34,10 +33,9 @@ if ($Package) {
     $stage = Join-Path $dist 'stage'
     $folder = Join-Path $stage 'com.xiaodoudou.helldivers2-stratagems.sdPlugin'
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
-    New-Item -ItemType Directory -Force (Join-Path $folder 'data') | Out-Null
+    New-Item -ItemType Directory -Force $folder | Out-Null
     Copy-Item (Join-Path $plugin 'manifest.json'), $exe $folder
     Copy-Item -Recurse (Join-Path $plugin 'imgs'), (Join-Path $plugin 'pi') $folder
-    Copy-Item -Recurse (Join-Path $data 'stratagems.json'), (Join-Path $data 'icons_144'), (Join-Path $data 'status') (Join-Path $folder 'data')
     $out = Join-Path $dist "$uuid.streamDeckPlugin"
     if (Test-Path $out) { Remove-Item -Force $out }
     # entries are named here: Windows PowerShell's CreateFromDirectory writes backslashes, which zip readers may refuse
