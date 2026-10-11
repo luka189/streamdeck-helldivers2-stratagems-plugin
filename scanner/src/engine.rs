@@ -119,6 +119,7 @@ struct Slot {
     challenger: Option<(usize, u32)>, // a different stratagem read here, and for how many scans in a row
     cooldown_from: Option<Instant>,   // when a cooldown was seen starting full, to learn its real length
     seen_at: Instant,                 // last time its row was on screen
+    ends: Option<(Instant, Instant)>, // the cooldown's end as bounded by the timers read on screen
 }
 
 const TAKEOVER_SCANS: u32 = 4; // sure readings of another stratagem in a row before it takes a slot
@@ -128,6 +129,13 @@ const UNSEEN_GRACE: f32 = 20.0; // seconds past the estimated end before an unse
 // The closed HUD drops a row once its call-in has landed and only brings it back when ready again,
 // so an in-flight row gone this long (HUD still up) means its cooldown has started.
 const ACTIVE_GONE: Duration = Duration::from_millis(1500);
+// The cooldown timer shows whole seconds, and whether it rounds the time left down or up is not known:
+// "T-00:09" means 9 to 9 + TIMER_ROUNDING seconds left. The key counts down to the latest, never early.
+const TIMER_ROUNDING: f32 = 1.0;
+// A narrower bound on the end moving it less than this is not taken: every change of a view is a repaint.
+const TIMER_STEP: Duration = Duration::from_millis(100);
+// Fill share from which time left / fill gives the cooldown's length (the fill is read a row at a time).
+const FILL_RELIABLE: f32 = 0.5;
 
 /// What a key shows for one menu slot.
 #[derive(Clone, Debug, PartialEq)]
@@ -138,6 +146,17 @@ pub struct SlotView {
     pub fill: f32,
     /// The game's count badge, last time it was seen.
     pub badge: Option<Badge>,
+    /// While cooling down: when it is expected to be ready.
+    pub ready: Option<ReadyAt>,
+}
+
+/// When a cooling slot is expected to be ready: as a timer read on screen says (`timed`, exact to the
+/// second), or where the fill's drain reaches zero (an estimate). A moment rather than the time left,
+/// so a view kept by the plugin stays right, and only changes when the estimate does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReadyAt {
+    pub at: Instant,
+    pub timed: bool,
 }
 
 impl Slot {
@@ -157,6 +176,7 @@ impl Slot {
             challenger: None,
             cooldown_from: None,
             seen_at: Instant::now(),
+            ends: None,
         };
         s.observe_fill(r);
         s
@@ -167,6 +187,7 @@ impl Slot {
     fn observe_fill(&mut self, r: &Row) {
         let now = Instant::now();
         match self.status {
+            Status::Cooldown if self.ends.is_some() => {} // the timer read on screen says more
             Status::Cooldown => {
                 let dt = now.duration_since(self.fill_at).as_secs_f32();
                 let drop = self.fill - r.fill_bottom;
@@ -184,6 +205,34 @@ impl Slot {
         }
     }
 
+    /// A cooldown timer read on screen, `secs` left. Each reading bounds the end (see TIMER_ROUNDING) and
+    /// narrows the bounds kept so far: the shown second changing pins the end to within a scan. A reading
+    /// that does not fit them starts afresh. The key counts down to the latest end, with the fill drawn
+    /// reaching zero right then. Returns the cooldown's length when the reading tells it: exactly when
+    /// the cooldown was seen starting, otherwise from the fill when it is large enough to be reliable.
+    fn observe_timer(&mut self, secs: u32, fill_bottom: f32, now: Instant) -> Option<f32> {
+        let lo = now + Duration::from_secs(secs as u64);
+        let hi = lo + Duration::from_secs_f32(TIMER_ROUNDING);
+        let (lo, hi) = match self.ends {
+            Some((l, h)) if lo < h && l < hi => (l.max(lo), if h.duration_since(hi) >= TIMER_STEP { hi } else { h }),
+            _ => (lo, hi),
+        };
+        self.ends = Some((lo, hi));
+        let left = hi.duration_since(now).as_secs_f32();
+        let length = match self.cooldown_from {
+            Some(start) => Some(now.duration_since(start).as_secs_f32() + left),
+            None if fill_bottom >= FILL_RELIABLE => Some(left / fill_bottom),
+            None => None,
+        }
+        .map(|s| s.max(left).max(1.0));
+        if let Some(s) = length {
+            self.cooldown_s = s;
+        }
+        let total = self.cooldown_s.max(left).max(1.0);
+        (self.fill, self.fill_at, self.rate) = (left / total, now, Some(1.0 / total));
+        length
+    }
+
     fn view(&self) -> SlotView {
         let mut v = self.view_state();
         // no uses left: the game drops the badge, and so do we
@@ -193,18 +242,22 @@ impl Slot {
 
     fn view_state(&self) -> SlotView {
         let q = |f: f32| (f.clamp(0.0, 1.0) * 72.0).round() / 72.0;
-        let v = |status, fill| SlotView { index: self.index, status, fill, badge: None };
+        let v = |status, fill| SlotView { index: self.index, status, fill, badge: None, ready: None };
         match self.status {
             Status::Cooldown => {
-                // the end of a cooldown is a sliver too thin to measure, so the estimate only draws the
-                // fill; the key unlocks when the game shows it ready, or long after the estimated end
-                // if that moment went unseen
+                // the end of a cooldown is a sliver too thin to measure, so without a timer the estimate
+                // only draws the fill; the key unlocks when the game shows it ready, or long after the
+                // estimated end if that moment went unseen. A timer read on screen gives the end itself.
                 let rate = self.rate.unwrap_or(1.0 / self.cooldown_s.max(1.0));
                 let since = self.fill_at.elapsed().as_secs_f32();
-                if since > self.fill / rate.max(1e-4) + UNSEEN_GRACE {
+                let (end, timed, grace) = match self.ends {
+                    Some((_, hi)) => (hi, true, 0.0),
+                    None => (self.fill_at + Duration::from_secs_f32((self.fill / rate.max(1e-4)).max(0.0)), false, UNSEEN_GRACE),
+                };
+                if Instant::now() > end + Duration::from_secs_f32(grace) {
                     v(Status::Ready, 0.0)
                 } else {
-                    v(self.status, q(self.fill - rate * since).max(1.0 / 72.0))
+                    SlotView { ready: Some(ReadyAt { at: end, timed }), ..v(self.status, q(self.fill - rate * since).max(1.0 / 72.0)) }
                 }
             }
             // a call-in the game never showed (refused, or typed into a vehicle) stops blocking the key
@@ -231,7 +284,7 @@ impl Slot {
         if n >= need {
             self.status = st;
             self.next = None;
-            (self.fill, self.rate) = (0.0, None);
+            (self.fill, self.rate, self.ends) = (0.0, None, None);
             true
         } else {
             self.next = Some((st, n));
@@ -315,7 +368,7 @@ impl Engine {
     pub fn mark_called(&mut self, index: usize) -> bool {
         match self.slots.values_mut().find(|s| s.index == index) {
             Some(s) if s.status != Status::Active => {
-                (s.status, s.next, s.fill, s.fill_at) = (Status::Active, None, 0.0, Instant::now());
+                (s.status, s.next, s.fill, s.fill_at, s.ends) = (Status::Active, None, 0.0, Instant::now(), None);
                 s.assumed = Some(Instant::now());
                 true
             }
@@ -405,6 +458,11 @@ impl Engine {
                     }
                     _ => {}
                 }
+                if let Some(secs) = r.timer.filter(|_| (r.status, s.status) == (Status::Cooldown, Status::Cooldown))
+                    && let Some(length) = s.observe_timer(secs, r.fill_bottom, Instant::now())
+                {
+                    self.learned.insert(s.index, length);
+                }
                 if r.badge.is_some() && r.badge != s.badge {
                     s.badge = r.badge.clone();
                     changed = true;
@@ -455,7 +513,7 @@ impl Engine {
         if !rows.is_empty() {
             for s in self.slots.values_mut() {
                 if s.status == Status::Active && s.assumed.is_none() && s.seen_at.elapsed() > ACTIVE_GONE {
-                    (s.status, s.next, s.fill, s.fill_at, s.rate) = (Status::Cooldown, None, 1.0, s.seen_at, None);
+                    (s.status, s.next, s.fill, s.fill_at, s.rate, s.ends) = (Status::Cooldown, None, 1.0, s.seen_at, None, None);
                     s.cooldown_from = Some(s.seen_at);
                     changed = true;
                 }
@@ -583,7 +641,7 @@ mod tests {
     }
 
     fn row(index: usize, slot: usize, status: Status) -> Row {
-        Row { index, score: 0.95, sure: true, slot, status, fill_bottom: 0.0, fill_top: 0.0, badge: None }
+        Row { index, score: 0.95, sure: true, slot, status, fill_bottom: 0.0, fill_top: 0.0, badge: None, timer: None }
     }
 
     fn badge(hash: u64) -> Badge {
@@ -1159,5 +1217,134 @@ mod tests {
         assert!(feed(&mut e, &closed));
         assert_eq!(view(&e, 3).status, Cooldown);
         assert_eq!(e.loadout().len(), 7, "slots off screen are remembered");
+        // the timers read on menu_open drive the countdowns: Quasar Cannon T-04:50, Warp Pack T-04:48
+        for (k, shown) in [(4, 290.0), (5, 288.0)] {
+            let (secs, timed) = left(&e, k);
+            assert!(timed && (secs - (shown + TIMER_ROUNDING)).abs() < 1.0, "slot {k}: {secs} s left");
+        }
+    }
+
+    // ---- cooldown timers ----
+
+    fn cooling(index: usize, slot: usize, fill: f32, timer: Option<u32>) -> Row {
+        Row { fill_bottom: fill, timer, ..row(index, slot, Status::Cooldown) }
+    }
+
+    /// Seconds until slot `k` is expected to be ready, and whether a timer says so.
+    fn left(e: &Engine, k: usize) -> (f32, bool) {
+        let r = view(e, k).ready.unwrap_or_else(|| panic!("slot {k} has no end: {:?}", view(e, k)));
+        (r.at.saturating_duration_since(Instant::now()).as_secs_f32(), r.timed)
+    }
+
+    /// Let `secs` seconds pass for slot `k`: every moment it remembers moves that far into the past.
+    fn pass(e: &mut Engine, k: usize, secs: f32) {
+        let back = |t: Instant| t.checked_sub(Duration::from_secs_f32(secs)).expect("system uptime shorter than the simulated wait");
+        let s = e.slots.get_mut(&k).unwrap();
+        (s.fill_at, s.seen_at) = (back(s.fill_at), back(s.seen_at));
+        s.ends = s.ends.map(|(lo, hi)| (back(lo), back(hi)));
+        s.cooldown_from = s.cooldown_from.map(back);
+        s.assumed = s.assumed.map(back);
+    }
+
+    /// Seen live: "Cooldown T-00:09" over a 1 px fill read as about 1% of a 300 s cooldown. The fill
+    /// alone said 3 s left; the timer keeps the key cooling until its end, and the fill drawn does not
+    /// reach zero before.
+    #[test]
+    fn a_timer_read_near_the_end_keeps_the_slot_cooling_until_it_runs_out() {
+        let mut e = engine();
+        let laser = idx(&e, "Orbital Laser");
+        feed_n(&mut e, &[cooling(laser, 3, 0.01, Some(9))], 2);
+        let (secs, timed) = left(&e, 3);
+        assert!(timed && (secs - (9.0 + TIMER_ROUNDING)).abs() < 0.1, "{secs} s left");
+        for t in [3.0, 6.0, 9.5, 9.9] {
+            let elapsed = 9.0 + TIMER_ROUNDING - left(&e, 3).0;
+            pass(&mut e, 3, t - elapsed);
+            let v = view(&e, 3);
+            assert_eq!(v.status, Status::Cooldown, "{t} s after the reading");
+            assert!(v.fill > 0.0, "the fill is still drawn {t} s after the reading");
+        }
+        pass(&mut e, 3, 0.2);
+        let v = view(&e, 3);
+        assert_eq!((v.status, v.ready), (Status::Ready, None), "the timer has run out");
+    }
+
+    #[test]
+    fn without_a_timer_the_end_is_estimated_from_the_fill() {
+        let mut e = engine();
+        let laser = idx(&e, "Orbital Laser"); // 300 s on the wiki
+        feed_n(&mut e, &[cooling(laser, 3, 0.5, None)], 2);
+        let (secs, timed) = left(&e, 3);
+        assert!(!timed && (secs - 150.0).abs() < 0.5, "{secs} s left");
+        assert_eq!(e.slots[&3].ends, None);
+    }
+
+    #[test]
+    fn a_cooldown_seen_starting_learns_its_length_from_the_timer() {
+        let mut e = engine();
+        let laser = idx(&e, "Orbital Laser");
+        feed_n(&mut e, &[row(laser, 3, Status::Ready)], 2);
+        feed_n(&mut e, &[cooling(laser, 3, 0.95, Some(290))], 2);
+        let length = 290.0 + TIMER_ROUNDING;
+        assert!((e.cooldown_s(laser) - length).abs() < 0.1, "{}", e.cooldown_s(laser));
+        assert!((view(&e, 3).fill - 1.0).abs() <= 1.0 / 72.0, "a cooldown just started is full");
+        // 100 s on, the timer agrees with the length learned
+        pass(&mut e, 3, 100.0);
+        feed(&mut e, &[cooling(laser, 3, 0.6, Some(190))]);
+        assert!((e.cooldown_s(laser) - length).abs() < 0.1, "{}", e.cooldown_s(laser));
+        let v = view(&e, 3);
+        assert!((v.fill - (190.0 + TIMER_ROUNDING) / length).abs() <= 1.0 / 72.0, "{}", v.fill);
+    }
+
+    #[test]
+    fn the_length_is_learned_from_a_fill_large_enough_to_be_reliable() {
+        let mut e = engine();
+        let laser = idx(&e, "Orbital Laser");
+        // first seen half way through: no start, so the length comes from time left / fill
+        feed_n(&mut e, &[cooling(laser, 3, 0.6, Some(120))], 2);
+        let length = (120.0 + TIMER_ROUNDING) / 0.6;
+        assert!((e.cooldown_s(laser) - length).abs() < 0.1, "{}", e.cooldown_s(laser));
+        // a thin fill is too coarse to tell
+        let mut e = engine();
+        feed_n(&mut e, &[cooling(laser, 3, 0.3, Some(120))], 2);
+        assert_eq!(e.cooldown_s(laser), 300.0);
+        let (secs, timed) = left(&e, 3);
+        assert!(timed && (secs - (120.0 + TIMER_ROUNDING)).abs() < 0.1, "the end still follows the timer");
+    }
+
+    #[test]
+    fn readings_narrow_the_end_and_one_that_does_not_fit_starts_afresh() {
+        let mut e = engine();
+        let laser = idx(&e, "Orbital Laser");
+        feed_n(&mut e, &[cooling(laser, 3, 0.2, Some(20))], 2);
+        let first = view(&e, 3).ready.unwrap().at;
+        // the same second, read again: nothing new, so the view, and the key, stay as they are
+        pass(&mut e, 3, 0.4);
+        let before = e.loadout();
+        assert!(!feed(&mut e, &[cooling(laser, 3, 0.2, Some(20))]));
+        assert_eq!(e.loadout(), before, "no repaint");
+        // the shown second changes 0.7 s after the first reading: the end is 20 s after that change
+        pass(&mut e, 3, 0.3);
+        feed(&mut e, &[cooling(laser, 3, 0.2, Some(19))]);
+        let (secs, _) = left(&e, 3);
+        assert!((secs - 20.0).abs() < 0.05, "{secs} s left");
+        let moved = first.checked_sub(Duration::from_secs_f32(0.7)).unwrap().saturating_duration_since(view(&e, 3).ready.unwrap().at);
+        assert!((moved.as_secs_f32() - 0.3).abs() < 0.05, "the end came 0.3 s closer, {moved:?}");
+        // a reading that fits none of that: a new countdown
+        feed(&mut e, &[cooling(laser, 3, 0.9, Some(50))]);
+        let (secs, timed) = left(&e, 3);
+        assert!(timed && (secs - (50.0 + TIMER_ROUNDING)).abs() < 0.05, "{secs} s left");
+    }
+
+    #[test]
+    fn a_new_status_forgets_the_timer_and_inbound_timers_are_not_cooldowns() {
+        let mut e = engine();
+        let laser = idx(&e, "Orbital Laser");
+        feed_n(&mut e, &[cooling(laser, 3, 0.2, Some(20))], 2);
+        feed_n(&mut e, &[row(laser, 3, Status::Ready)], 2);
+        assert_eq!((view(&e, 3).status, view(&e, 3).ready, e.slots[&3].ends), (Status::Ready, None, None));
+        feed_n(&mut e, &[Row { timer: Some(7), fill_top: 0.2, ..row(laser, 3, Status::Active) }], 2);
+        assert_eq!((view(&e, 3).status, view(&e, 3).ready, e.slots[&3].ends), (Status::Active, None, None));
+        feed_n(&mut e, &[cooling(laser, 3, 0.95, None)], 2);
+        assert!(!left(&e, 3).1, "a cooldown without a timer on screen is an estimate");
     }
 }

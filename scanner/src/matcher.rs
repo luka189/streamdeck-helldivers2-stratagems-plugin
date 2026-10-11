@@ -63,6 +63,8 @@ pub struct Row {
     pub fill_top: f32,
     /// The use-count badge at the icon's corner, if the row has one.
     pub badge: Option<Badge>,
+    /// Seconds left on the status line's timer ("Cooldown T-04:50", "Inbound T-00:07"), when it shows one.
+    pub timer: Option<u32>,
 }
 
 /// The count badge's digits as a mask (true = dark digit pixel), trimmed to the digits; the cream
@@ -271,12 +273,12 @@ impl Matcher {
                 // gap is a bright notice and must clear a bar scenery cannot (scenery reached 0.60)
                 Some((index, score, sure, dx, dy)) if !gap || score >= ROW_MIN_ISOLATED => {
                     let top = ROW0_Y + ROW_PITCH * k as f64;
-                    let (status, _) = self.status.read(col, f, size, top, origin);
+                    let line = self.status.read(col, f, size, top, origin);
                     let (index, sure) = self.resolve_lookalike(col, f, size, top, origin, k, index, sure);
                     let sized = self.sized.as_ref().expect("prepared");
                     let (fill_bottom, fill_top) = fill_profile(&win, dx, dy, &sized.images[index], size);
                     let badge = read_badge(col, f, ROW0_Y + ROW_PITCH * k as f64, origin);
-                    rows.push(Row { index, score, sure, slot: k, status, fill_bottom, fill_top, badge })
+                    rows.push(Row { index, score, sure, slot: k, status: line.status, fill_bottom, fill_top, badge, timer: line.timer })
                 }
                 _ => {
                     gap = true;

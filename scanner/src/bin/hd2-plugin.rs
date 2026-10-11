@@ -817,7 +817,7 @@ mod tests {
     }
 
     fn sv(index: usize, status: Status, fill: f32, badge: Option<Badge>) -> SlotView {
-        SlotView { index, status, fill, badge }
+        SlotView { index, status, fill, badge, ready: None }
     }
 
     fn plugin(loadout: Loadout) -> Plugin {

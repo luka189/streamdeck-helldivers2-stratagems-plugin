@@ -112,6 +112,17 @@ const FRAMES: &[Frame] = &[
     },
 ];
 
+/// The timers the status lines show, in seconds ("Cooldown T-04:50" is 290); every other row shows none.
+const TIMERS: &[(&str, usize, u32)] = &[
+    ("menu_open", 4, 4 * 60 + 50),
+    ("menu_open", 5, 4 * 60 + 48),
+    ("menu_unavailable", 2, 16),
+    ("menu_unavailable", 4, 5),
+    ("menu_unavailable", 5, 7), // Inbound
+    ("capture_2560x1440_082327", 4, 3 * 60 + 8),
+    ("capture_2560x1440_082327", 5, 2 * 60 + 59),
+];
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Field {
     Name,
@@ -276,6 +287,27 @@ fn capture_082327_reads_as_seen() {
     assert_frame("capture_2560x1440_082327");
 }
 
+#[test]
+fn timers_read_exactly_and_only_where_shown() {
+    let mut bad = Vec::new();
+    for f in FRAMES {
+        for (r, name) in reads()[f.name].rows.iter().zip(&reads()[f.name].names) {
+            let want = TIMERS.iter().find(|t| t.0 == f.name && t.1 == r.slot).map(|t| t.2);
+            if r.timer != want {
+                bad.push(format!("{} slot {} {name}: timer {:?}, shows {want:?}", f.name, r.slot, r.timer));
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "{}",
+        bad.join(
+            "
+"
+        )
+    );
+}
+
 /// The engine compares badges by hash: the same digit must hash the same in every frame, and
 /// different digits differently.
 #[test]
@@ -393,12 +425,13 @@ fn make_fixtures() {
         for r in &cropped {
             let code = m.slot_code(&back, FRAME_H, (x0, y0), 1.0, r.slot);
             println!(
-                "  slot {} {} score {:.3}{} {:?} fill b{:.3} t{:.3} badge {:?} arrows {code:?}",
+                "  slot {} {} score {:.3}{} {:?} timer {:?} fill b{:.3} t{:.3} badge {:?} arrows {code:?}",
                 r.slot,
                 m.catalog[r.index].name,
                 r.score,
                 if r.sure { "" } else { " unsure" },
                 r.status,
+                r.timer,
                 r.fill_bottom,
                 r.fill_top,
                 r.badge.as_ref().map(|b| (b.w, b.h, b.hash)),

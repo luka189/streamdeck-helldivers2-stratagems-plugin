@@ -1,4 +1,5 @@
-//! Reads a menu row's status line: the arrow code when it can be called, otherwise a state word.
+//! Reads a menu row's status line: the arrow code when it can be called, otherwise a state word,
+//! and after "Cooldown" or "Inbound" the timer (T-MM:SS).
 //! Templates are greyscale cuts from 2560x1440 frames (tools/make_status_templates.py).
 //! The words are the English HUD text; other game languages need their own cuts.
 
@@ -27,18 +28,47 @@ const ARROW_W: f64 = 26.0;
 // only differ at the 6th, and the longest code (Aquifer Drill) has 8
 pub const CODE_READ: usize = 8;
 
+// The timer's digits sit in fixed cells after the word: the first one TIMER_AFTER_* px right of where
+// the word starts, the others DIGIT_CELLS further (the colon between minutes and seconds), at 1440p.
+const TIMER_AFTER_COOLDOWN: f64 = 133.0; // "Cooldown T-"
+const TIMER_AFTER_INBOUND: f64 = 117.0; // "Inbound T-"
+const DIGIT_CELLS: [f64; 4] = [0.0, 13.0, 31.0, 44.0];
+const DIGIT_MIN: f32 = 0.7; // a digit's correlation, and its lead over the next best digit
+const DIGIT_MARGIN: f32 = 0.03;
+
 struct Template {
     status: Status,
-    dir: Option<char>, // arrow templates: the direction letter
+    dir: Option<char>,  // arrow templates: the direction letter
+    timer: Option<f64>, // word templates followed by a timer: where its first digit starts, past the word
+    digit: Option<u32>, // digit templates: the digit
     x: f64,
     w: usize,
     h: usize,
     v: Vec<f32>, // zero-mean, unit norm
 }
 
+/// A template as cut, before scaling to the game's size.
+struct Raw {
+    status: Status,
+    dir: Option<char>,
+    timer: Option<f64>,
+    digit: Option<u32>,
+    x: f64,
+    img: Img,
+}
+
 pub struct StatusReader {
-    raw: Vec<(Status, Option<char>, f64, Img)>,
+    raw: Vec<Raw>,
     scaled: Option<(usize, Vec<Template>)>, // keyed by icon size
+}
+
+/// What a row's status line says.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Line {
+    pub status: Status,
+    pub score: f32,
+    /// The timer after "Cooldown" or "Inbound", in seconds, when all four digits read clearly.
+    pub timer: Option<u32>,
 }
 
 /// Right edge (at 1440p) the capture must reach for the status words and the first CODE_READ arrows.
@@ -51,21 +81,25 @@ fn gray(img: &Img) -> Vec<f32> {
 impl StatusReader {
     pub fn load(dir: &Path) -> StatusReader {
         let table = [
-            ("word_ready", Status::Ready, None, WORD_X),
-            ("word_cooldown", Status::Cooldown, None, WORD_X),
-            ("word_unavailable", Status::Unavailable, None, WORD_X),
-            ("word_impact", Status::Active, None, WORD_X),
-            ("word_inbound", Status::Active, None, WORD_X),
-            ("word_activating", Status::Active, None, WORD_X),
-            ("arrow_up", Status::Ready, Some('U'), ARROW_X),
-            ("arrow_down", Status::Ready, Some('D'), ARROW_X),
-            ("arrow_left", Status::Ready, Some('L'), ARROW_X),
-            ("arrow_right", Status::Ready, Some('R'), ARROW_X),
+            ("word_ready", Status::Ready, None, None, WORD_X),
+            ("word_cooldown", Status::Cooldown, None, Some(TIMER_AFTER_COOLDOWN), WORD_X),
+            ("word_unavailable", Status::Unavailable, None, None, WORD_X),
+            ("word_impact", Status::Active, None, None, WORD_X),
+            ("word_inbound", Status::Active, None, Some(TIMER_AFTER_INBOUND), WORD_X),
+            ("word_activating", Status::Active, None, None, WORD_X),
+            ("arrow_up", Status::Ready, Some('U'), None, ARROW_X),
+            ("arrow_down", Status::Ready, Some('D'), None, ARROW_X),
+            ("arrow_left", Status::Ready, Some('L'), None, ARROW_X),
+            ("arrow_right", Status::Ready, Some('R'), None, ARROW_X),
         ];
-        let raw = table
+        let load = |name: &str| Img::load_png(&dir.join(format!("{name}.png"))).ok();
+        let mut raw: Vec<Raw> = table
             .iter()
-            .filter_map(|(name, status, d, x)| Img::load_png(&dir.join(format!("{name}.png"))).ok().map(|img| (*status, *d, *x, img)))
+            .filter_map(|&(name, status, dir, timer, x)| load(name).map(|img| Raw { status, dir, timer, digit: None, x, img }))
             .collect();
+        raw.extend((0..10).filter_map(|d| {
+            load(&format!("digit_{d}")).map(|img| Raw { status: Status::Unknown, dir: None, timer: None, digit: Some(d), x: 0.0, img })
+        }));
         StatusReader { raw, scaled: None }
     }
 
@@ -76,31 +110,33 @@ impl StatusReader {
         let tpls = self
             .raw
             .iter()
-            .map(|(status, dir, x, img)| {
-                let (w, h) = (((img.w as f64) * f).round().max(4.0) as usize, ((img.h as f64) * f).round().max(4.0) as usize);
-                let mut v = gray(&img.resize_area(w, h));
+            .map(|r| {
+                let (w, h) = (((r.img.w as f64) * f).round().max(4.0) as usize, ((r.img.h as f64) * f).round().max(4.0) as usize);
+                let mut v = gray(&r.img.resize_area(w, h));
                 let mean = v.iter().sum::<f32>() / v.len() as f32;
                 v.iter_mut().for_each(|p| *p -= mean);
                 let n = v.iter().map(|p| p * p).sum::<f32>().sqrt().max(1e-3);
                 v.iter_mut().for_each(|p| *p /= n);
-                Template { status: *status, dir: *dir, x: *x, w, h, v }
+                Template { status: r.status, dir: r.dir, timer: r.timer, digit: r.digit, x: r.x, w, h, v }
             })
             .collect();
         self.scaled = Some((size, tpls));
     }
 
-    /// Status of the row whose icon top is at `top` (1440p units), in a capture starting at `origin`.
-    pub fn read(&mut self, col: &Img, f: f64, size: usize, top: f64, origin: (usize, usize)) -> (Status, f32) {
+    /// The status line of the row whose icon top is at `top` (1440p units), in a capture starting at `origin`.
+    pub fn read(&mut self, col: &Img, f: f64, size: usize, top: f64, origin: (usize, usize)) -> Line {
         self.prepare(f, size);
-        let Some((_, tpls)) = &self.scaled else { return (Status::Unknown, 0.0) };
-        let mut best = (Status::Unknown, STATUS_MIN);
-        for t in tpls {
-            let c = best_at(col, f, t, t.x, top, origin);
-            if c > best.1 {
-                best = (t.status, c);
+        let Some((_, tpls)) = &self.scaled else { return Line { status: Status::Unknown, score: 0.0, timer: None } };
+        let mut best: Option<(&Template, f32, isize, isize)> = None;
+        for t in tpls.iter().filter(|t| t.digit.is_none()) {
+            let (c, x, y) = near(col, t, at(f, t.x, top, origin), slack(f));
+            if c > best.map_or(STATUS_MIN, |b| b.1) {
+                best = Some((t, c, x, y));
             }
         }
-        best
+        let Some((t, score, x, y)) = best else { return Line { status: Status::Unknown, score: STATUS_MIN, timer: None } };
+        let timer = t.timer.and_then(|after| read_timer(col, f, tpls, (x + (after * f).round() as isize, y)));
+        Line { status: t.status, score, timer }
     }
 
     /// The arrow code shown on the status line, as "UDLR" letters, up to `max` arrows; stops at the
@@ -122,17 +158,49 @@ impl StatusReader {
     }
 }
 
+/// The timer's seconds, its first digit's cell starting at `first` (capture pixels, placed after where
+/// the word matched): each of the four cells must hold one digit clearly ahead of the others, and the
+/// tens of seconds be 0-5.
+fn read_timer(col: &Img, f: f64, tpls: &[Template], first: (isize, isize)) -> Option<u32> {
+    let mut d = [0u32; 4];
+    for (cell, digit) in DIGIT_CELLS.iter().zip(d.iter_mut()) {
+        let x = first.0 + (cell * f).round() as isize;
+        let mut scores: Vec<(f32, u32)> = tpls.iter().filter_map(|t| t.digit.map(|n| (near(col, t, (x, first.1), 1).0, n))).collect();
+        scores.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let (best, second) = (scores.first()?, scores.get(1).map_or(-1.0, |s| s.0));
+        if best.0 < DIGIT_MIN || best.0 - second < DIGIT_MARGIN {
+            return None;
+        }
+        *digit = best.1;
+    }
+    (d[2] <= 5).then_some((d[0] * 10 + d[1]) * 60 + d[2] * 10 + d[3])
+}
+
+fn slack(f: f64) -> isize {
+    ((SLACK as f64) * f).round().max(1.0) as isize
+}
+
+/// Capture pixel where a template cut at `x` (1440p) on the status line of the row at `top` starts.
+fn at(f: f64, x: f64, top: f64, origin: (usize, usize)) -> (isize, isize) {
+    ((x * f).round() as isize - origin.0 as isize, ((top + BAND_Y) * f).round() as isize - origin.1 as isize)
+}
+
 /// Best normalised correlation of template `t` placed at `x` (1440p) on the status line, within the slack.
 fn best_at(col: &Img, f: f64, t: &Template, x: f64, top: f64, origin: (usize, usize)) -> f32 {
-    let slack = ((SLACK as f64) * f).round().max(1.0) as isize;
-    let x = (x * f).round() as isize - origin.0 as isize - slack;
-    let y = ((top + BAND_Y) * f).round() as isize - origin.1 as isize - slack;
+    near(col, t, at(f, x, top, origin), slack(f)).0
+}
+
+/// Best normalised correlation of template `t` with its top-left within `slack` pixels of `pos`
+/// (capture pixels), and where that was.
+fn near(col: &Img, t: &Template, pos: (isize, isize), slack: isize) -> (f32, isize, isize) {
+    let (x, y) = (pos.0 - slack, pos.1 - slack);
     let win = col.crop(x, y, t.w + 2 * slack as usize, t.h + 2 * slack as usize);
     if win.w < t.w || win.h < t.h {
-        return -1.0;
+        return (-1.0, pos.0, pos.1);
     }
+    let (x, y) = (x.max(0), y.max(0)); // where the window starts once clamped to the capture
     let g = gray(&win);
-    let mut best = -1.0f32;
+    let mut best = (-1.0f32, pos.0, pos.1);
     for dy in 0..=win.h - t.h {
         for dx in 0..=win.w - t.w {
             let (mut s, mut ss, mut d) = (0.0f32, 0.0f32, 0.0f32);
@@ -147,8 +215,8 @@ fn best_at(col: &Img, f: f64, t: &Template, x: f64, top: f64, origin: (usize, us
             }
             let n = (t.w * t.h) as f32;
             let var = ss - s * s / n;
-            if var > 1e-3 {
-                best = best.max(d / var.sqrt());
+            if var > 1e-3 && d / var.sqrt() > best.0 {
+                best = (d / var.sqrt(), x + dx as isize, y + dy as isize);
             }
         }
     }
@@ -217,11 +285,13 @@ mod tests {
     }
 
     #[test]
-    fn loads_all_ten_templates() {
+    fn loads_every_template() {
         let r = StatusReader::load(&dir());
-        assert_eq!(r.raw.len(), 10);
-        assert_eq!(r.raw.iter().filter(|t| t.1.is_some()).count(), 4, "four arrows");
-        assert_eq!(r.raw.iter().filter(|t| t.0 == Status::Active).count(), 3, "impact, inbound and activating");
+        assert_eq!(r.raw.len(), 20);
+        assert_eq!(r.raw.iter().filter(|t| t.dir.is_some()).count(), 4, "four arrows");
+        assert_eq!(r.raw.iter().filter(|t| t.status == Status::Active).count(), 3, "impact, inbound and activating");
+        assert_eq!(r.raw.iter().filter_map(|t| t.digit).collect::<Vec<_>>(), (0..10).collect::<Vec<_>>(), "ten digits");
+        assert_eq!(r.raw.iter().filter(|t| t.timer.is_some()).count(), 2, "cooldown and inbound have a timer");
     }
 
     #[test]
@@ -229,7 +299,7 @@ mod tests {
         let mut r = StatusReader::load(Path::new("no/such/dir"));
         let mut img = line(1.0);
         draw(&mut img, "word_ready", WORD_X, 0, 1.0);
-        assert_eq!(r.read(&img, 1.0, size(1.0), TOP, (0, 0)).0, Status::Unknown);
+        assert_eq!(r.read(&img, 1.0, size(1.0), TOP, (0, 0)).status, Status::Unknown);
         assert_eq!(r.read_arrows(&img, 1.0, size(1.0), TOP, (0, 0), CODE_READ), "");
     }
 
@@ -237,7 +307,7 @@ mod tests {
     fn an_empty_line_reads_unknown() {
         let mut r = StatusReader::load(&dir());
         let img = line(1.0);
-        assert_eq!(r.read(&img, 1.0, size(1.0), TOP, (0, 0)).0, Status::Unknown);
+        assert_eq!(r.read(&img, 1.0, size(1.0), TOP, (0, 0)).status, Status::Unknown);
         assert_eq!(r.read_arrows(&img, 1.0, size(1.0), TOP, (0, 0), CODE_READ), "");
     }
 
@@ -255,7 +325,7 @@ mod tests {
                 let mut r = StatusReader::load(&dir());
                 let mut img = line(f);
                 draw(&mut img, word, WORD_X, 0, f);
-                let (got, score) = r.read(&img, f, size(f), TOP, (0, 0));
+                let Line { status: got, score, .. } = r.read(&img, f, size(f), TOP, (0, 0));
                 assert_eq!(got, status, "{word} at scale {f} (score {score})");
             }
         }
@@ -267,7 +337,7 @@ mod tests {
             let mut r = StatusReader::load(&dir());
             let mut img = line(1.0);
             draw(&mut img, "word_cooldown", WORD_X + SLACK as f64, dy, 1.0);
-            assert_eq!(r.read(&img, 1.0, size(1.0), TOP, (0, 0)).0, Status::Cooldown, "dy {dy}");
+            assert_eq!(r.read(&img, 1.0, size(1.0), TOP, (0, 0)).status, Status::Cooldown, "dy {dy}");
         }
     }
 
@@ -279,7 +349,7 @@ mod tests {
                 let mut img = line(f);
                 draw_code(&mut img, code, f);
                 assert_eq!(r.read_arrows(&img, f, size(f), TOP, (0, 0), CODE_READ), code, "scale {f}");
-                assert_eq!(r.read(&img, f, size(f), TOP, (0, 0)).0, Status::Ready, "{code} at scale {f}");
+                assert_eq!(r.read(&img, f, size(f), TOP, (0, 0)).status, Status::Ready, "{code} at scale {f}");
             }
         }
     }
@@ -305,5 +375,52 @@ mod tests {
         let origin = (56, 43);
         let col = full.crop(origin.0 as isize, origin.1 as isize, full.w - origin.0, full.h - origin.1);
         assert_eq!(r.read_arrows(&col, 1.0, size(1.0), TOP, origin, CODE_READ), "DLRD");
+    }
+
+    /// A status line showing `word` then the timer `mm:ss` (digits only; a blank keeps its cell empty),
+    /// each piece where the game draws it, `dx` px (1440p) off for the whole line.
+    fn draw_timer_line(img: &mut Img, word: &str, after: f64, mm_ss: &str, dx: f64, f: f64) {
+        draw(img, word, WORD_X + dx, 0, f);
+        for (cell, c) in DIGIT_CELLS.iter().zip(mm_ss.chars().filter(|c| *c != ':')) {
+            if c != ' ' {
+                draw(img, &format!("digit_{c}"), WORD_X + dx + after + cell, 0, f);
+            }
+        }
+    }
+
+    #[test]
+    fn the_timer_after_cooldown_and_inbound_reads_in_seconds() {
+        for (word, after, status) in
+            [("word_cooldown", TIMER_AFTER_COOLDOWN, Status::Cooldown), ("word_inbound", TIMER_AFTER_INBOUND, Status::Active)]
+        {
+            for (shown, secs) in [("04:50", 290), ("00:07", 7), ("12:34", 754), ("09:59", 599), ("00:00", 0), ("38:16", 2296)] {
+                for f in [1.0, 0.75, 1.5] {
+                    for dx in [0.0, 2.0] {
+                        let mut r = StatusReader::load(&dir());
+                        let mut img = line(f);
+                        draw_timer_line(&mut img, word, after, shown, dx, f);
+                        let got = r.read(&img, f, size(f), TOP, (0, 0));
+                        assert_eq!((got.status, got.timer), (status, Some(secs)), "{word} T-{shown} at scale {f}, {dx} px off");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_timer_without_one_on_screen_or_after_other_words() {
+        let read = |word: &str, after: f64, shown: &str| {
+            let mut r = StatusReader::load(&dir());
+            let mut img = line(1.0);
+            draw_timer_line(&mut img, word, after, shown, 0.0, 1.0);
+            r.read(&img, 1.0, size(1.0), TOP, (0, 0))
+        };
+        assert_eq!(read("word_cooldown", TIMER_AFTER_COOLDOWN, "    ").timer, None, "the word alone");
+        assert_eq!(read("word_cooldown", TIMER_AFTER_COOLDOWN, "04: 0").timer, None, "a digit missing");
+        assert_eq!(read("word_cooldown", TIMER_AFTER_COOLDOWN, "04:70").timer, None, "70 seconds is no time");
+        for word in ["word_ready", "word_impact", "word_activating", "word_unavailable"] {
+            let got = read(word, TIMER_AFTER_COOLDOWN, "04:50");
+            assert!(got.status != Status::Unknown && got.timer.is_none(), "{word}: {got:?}");
+        }
     }
 }
