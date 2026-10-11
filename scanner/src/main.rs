@@ -173,12 +173,13 @@ fn bench(data: &Path, inputs: &[String]) {
                     .iter()
                     .map(|r| {
                         format!(
-                            "{} {:.3} slot {}{} [{:?} fill b{:.2} t{:.2}{}]",
+                            "{} {:.3} slot {}{} [{:?}{} fill b{:.2} t{:.2}{}]",
                             m.catalog[r.index].name,
                             r.score,
                             r.slot,
                             if r.sure { "" } else { " unsure" },
                             r.status,
+                            r.timer.map_or(String::new(), |s| format!(" T-{:02}:{:02}", s / 60, s % 60)),
                             r.fill_bottom,
                             r.fill_top,
                             r.badge.as_ref().map_or(String::new(), |b| format!(" badge {}x{}", b.w, b.h))
