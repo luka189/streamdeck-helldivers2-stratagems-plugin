@@ -353,8 +353,10 @@ const MENU_SETTLE: Duration = Duration::from_secs(2); // after the HUD appears, 
 // the end is known, and only TIMER_SLACK of it is given away.
 const NEAR_READY: Duration = Duration::from_millis(1500);
 const TIMER_SLACK: Duration = Duration::from_millis(300);
-const MENU_RETRY: Duration = Duration::from_secs(5);
-const MENU_TRIES: u32 = 6;
+// at mission start, the menu is tried every MENU_RETRY until it opens, MENU_TRIES times at most (about 20 s)
+const MENU_RETRY: Duration = Duration::from_secs(2);
+const MENU_TRIES: u32 = 10;
+const MENU_OPEN_ROWS: usize = 4; // the open menu lists Reinforce, SoS Beacon and Resupply, plus the loadout
 const GAME_POLL: Duration = Duration::from_secs(2); // how often to check that the game is running
 
 /// Lets a key press wake the scan thread and switch it to fast scans for a while.
@@ -478,6 +480,7 @@ fn scan_thread(engine: Arc<Mutex<Engine>>, cfg: Arc<Mutex<Config>>, tx: mpsc::Un
     let (mut last_err, mut was_state): (Option<String>, Option<GameState>) = (None, None);
     let mut last_source = None;
     let (mut mission_since, mut menu_tries, mut menu_tried): (Option<Instant>, u32, Option<Instant>) = (None, 0, None);
+    let mut menu_skip: Option<String> = None; // why the last mission-start menu read was refused, logged once
     let (mut beat, mut scans, mut focused) = (Instant::now(), 0u32, 0u32);
     let (mut running, mut looked): (Option<bool>, Option<Instant>) = (None, None);
     loop {
@@ -534,28 +537,42 @@ fn scan_thread(engine: Arc<Mutex<Engine>>, cfg: Arc<Mutex<Config>>, tx: mpsc::Un
         if was_state != Some(state) {
             log(format!("game state {state:?}"));
             if state == GameState::Mission {
-                (mission_since, menu_tries, menu_tried) = (Some(Instant::now()), 0, None);
+                (mission_since, menu_tries, menu_tried, menu_skip) = (Some(Instant::now()), 0, None, None);
             }
             was_state = Some(state);
             if tx.send(Event::State(state)).is_err() {
                 return;
             }
         }
-        // a mission has started and the loadout is not known yet: open the menu once and read it,
-        // after the drop has settled, retrying in case the menu could not open yet (hellpod)
+        // a mission has started and the loadout is not known yet: open the menu and read it. The HUD shows
+        // before the player can open the menu (hellpod, landing), so a try that finds no open menu is
+        // retried soon, until the loadout is known, whoever opened the menu
         if c.auto_menu_scan
             && state == GameState::Mission
-            && l.iter().flatten().count() < 4
+            && l.iter().flatten().count() < MENU_OPEN_ROWS
             && menu_tries < MENU_TRIES
             && mission_since.is_some_and(|t| t.elapsed() >= MENU_SETTLE)
             && menu_tried.is_none_or(|t: Instant| t.elapsed() >= MENU_RETRY)
         {
-            menu_tries += 1;
             menu_tried = Some(Instant::now());
             let mut e = engine.lock().unwrap_or_else(|p| p.into_inner());
             match e.scan_menu(&c) {
-                Ok(_) => log(format!("mission start: opened the menu to read the loadout (try {menu_tries})")),
-                Err(err) => log(format!("mission start: menu read skipped: {err}")),
+                Ok(_) => {
+                    // only presses count as tries: a refused one (game not in front) sent nothing
+                    menu_tries += 1;
+                    if e.loadout().iter().flatten().count() >= MENU_OPEN_ROWS {
+                        log(format!("mission start: read the loadout from the menu (try {menu_tries})"));
+                    } else if menu_tries < MENU_TRIES {
+                        log(format!("mission start: the menu did not open (try {menu_tries}), trying again"));
+                    } else {
+                        log(format!("mission start: the menu did not open after {menu_tries} tries; open it once, or press Scan"));
+                    }
+                }
+                Err(err) if menu_skip.as_ref() != Some(&err) => {
+                    log(format!("mission start: menu read skipped: {err}"));
+                    menu_skip = Some(err);
+                }
+                Err(_) => {}
             }
             let fresh = e.loadout();
             drop(e);
