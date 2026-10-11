@@ -1307,4 +1307,79 @@ mod tests {
             .expect("write frames");
         println!("{} frames written to {}", frames.len(), file.display());
     }
+
+    /// Not a check: the keys the plugin draws for two real screenshots of the menu (read through the reader,
+    /// each row shown as a key shows it on first sight), the keys in standby, and the Scan key's four looks.
+    /// `tools/make_store_media.py` lays them out next to the screenshots for the Marketplace page.
+    /// cargo test --bin hd2-plugin -- --ignored --nocapture store_scenes
+    #[test]
+    #[ignore = "generator for the Marketplace media"]
+    fn store_scenes() {
+        use hd_scanner::matcher::column_box;
+
+        let data = Data::Embedded;
+        let mut m = Matcher::load(&data).expect("catalog");
+        let catalog: Vec<Stratagem> = m
+            .catalog
+            .iter()
+            .map(|s| Stratagem { name: s.name.clone(), code: s.code.clone(), png: data.read(&s.icon_path()).expect("icon") })
+            .collect();
+        let keys = ["scan", "clear", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"];
+        let mut p = Plugin {
+            keys: HashMap::new(),
+            loadout: vec![],
+            catalog,
+            icons: HashMap::new(),
+            frame: 4,
+            state: GameState::Mission,
+            standby: false,
+        };
+        p.register(SCAN, "scan", &json!({}));
+        p.register(CLEAR, "clear", &json!({}));
+        for k in 1..=8 {
+            p.register(SLOT, &format!("s{k}"), &json!({ "slot": k }));
+        }
+        let shoot = |p: &mut Plugin| -> Vec<String> { keys.iter().map(|k| image_of(&p.paint(k)[0]).to_string()).collect() };
+
+        let mut scenes = serde_json::Map::new();
+        for fixture in ["menu_open", "menu_unavailable"] {
+            let col = Img::load_png(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(format!("{fixture}.png")))
+                .expect("fixture");
+            let (x0, y0, _, _) = column_box(2560, 1440, 1.0);
+            m.reset();
+            let rows = m.read_rows(&col, 1440, (x0, y0), 1.0);
+            let mut loadout: Loadout = vec![None; rows.iter().map(|r| r.slot + 1).max().unwrap_or(0)];
+            for r in rows {
+                let (status, fill) = match r.status {
+                    Status::Cooldown => (Status::Cooldown, r.fill_bottom),
+                    Status::Active => (Status::Active, r.fill_top),
+                    Status::Unavailable => (Status::Unavailable, 1.0),
+                    _ => (Status::Ready, 0.0),
+                };
+                let badge = if status == Status::Unavailable { None } else { r.badge };
+                loadout[r.slot] = Some(SlotView { index: r.index, status, fill, badge, ready: None });
+            }
+            p.loadout = loadout;
+            scenes.insert(fixture.into(), json!(shoot(&mut p)));
+        }
+        (p.loadout, p.standby, p.state) = (vec![], true, GameState::Missing);
+        scenes.insert("standby".into(), json!(shoot(&mut p)));
+
+        let mut scan = serde_json::Map::new();
+        for (name, standby, state) in [
+            ("start", true, GameState::Missing),
+            ("missing", false, GameState::Missing),
+            ("lobby", false, GameState::Lobby),
+            ("mission", false, GameState::Mission),
+        ] {
+            (p.standby, p.state) = (standby, state);
+            scan.insert(name.into(), json!(image_of(&p.paint("scan")[0])));
+        }
+
+        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/demo");
+        std::fs::create_dir_all(&out).expect("target/demo");
+        let file = out.join("scenes.json");
+        std::fs::write(&file, serde_json::to_vec(&json!({ "columns": 5, "scenes": scenes, "scan": scan })).unwrap()).expect("write scenes");
+        println!("scenes written to {}", file.display());
+    }
 }

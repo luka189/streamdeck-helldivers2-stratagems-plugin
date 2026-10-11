@@ -98,6 +98,7 @@ languages/             screenshots for new game languages, see TRANSLATIONS.md
 | `capture_burst.py` | A series of full-screen screenshots, for new samples and fixtures |
 | `make_language_examples.py` | The annotated examples of [TRANSLATIONS.md](TRANSLATIONS.md) |
 | `make_demo_gif.py` | `docs/img/demo.gif`, the animation of the README (see [CONTRIBUTING.md](../CONTRIBUTING.md#tests)) |
+| `make_store_media.py` | The Elgato Marketplace media in `dist/store/`: icon, thumbnail, gallery images and video |
 | `commitlint.py` | The commit message check (see [CONTRIBUTING.md](../CONTRIBUTING.md#the-check)) |
 | `unwrap_md.py` | Joins hard-wrapped Markdown paragraphs into single lines |
 

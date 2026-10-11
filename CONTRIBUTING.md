@@ -59,7 +59,9 @@ Some tests are marked `#[ignore]`, with the reason. Most assert what a screensho
 | `cargo test --test frames -- --ignored --nocapture make_fixtures` | Cuts the fixtures again from `data/samples/` and checks that each crop reads like its full frame |
 | `cargo test --bin hd2-plugin -- --ignored --nocapture demo_frames` | The key images of a scripted mission, drawn by the plugin's own code; then `python tools/make_demo_gif.py` (from the repository root) turns them into `docs/img/demo.gif`, the animation of the README |
 
-Retake the README animation when the look of the keys changes.
+| `cargo test --bin hd2-plugin -- --ignored --nocapture store_scenes demo_frames` | The keys for two real screenshots of the menu, standby and the Scan key's looks, plus the scripted mission; then `python tools/make_store_media.py` makes the Elgato Marketplace media in `dist/store/` (it needs the full screenshots of `data/samples/` and ffmpeg for the video) |
+
+Retake the README animation and the Marketplace media when the look of the keys changes.
 
 ## What CI checks
 
