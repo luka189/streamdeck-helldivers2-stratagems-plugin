@@ -1,0 +1,74 @@
+{
+  "SDKVersion": 2,
+  "UUID": "com.xiaodoudou.helldivers2-stratagems",
+  "Name": "Helldivers 2 Stratagems",
+  "Author": "xiaodoudou",
+  "Description": "Shows the stratagems read from your Helldivers 2 loadout and enters their codes.",
+  "Version": "0.2.0.0",
+  "Icon": "imgs/plugin",
+  "CodePath": "hd2-plugin.exe",
+  "CodePathWin": "hd2-plugin.exe",
+  "Category": "Helldivers 2 Stratagems",
+  "CategoryIcon": "imgs/category",
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "Software": {
+    "MinimumVersion": "6.4"
+  },
+  "Actions": [
+    {
+      "UUID": "com.xiaodoudou.helldivers2-stratagems.slot",
+      "Name": "Stratagem Slot",
+      "Tooltip": "Shows the Nth stratagem read from the game and enters its code on press.",
+      "Icon": "imgs/acquiring_icon",
+      "PropertyInspectorPath": "pi/pi.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/acquiring",
+          "TitleAlignment": "bottom",
+          "FontSize": 10
+        }
+      ]
+    },
+    {
+      "UUID": "com.xiaodoudou.helldivers2-stratagems.rescan",
+      "Name": "Scan Now",
+      "Tooltip": "Reads the stratagems from the game immediately, or starts the game when it is not running. Its panel holds the settings shared by every key.",
+      "Icon": "imgs/scan_icon",
+      "PropertyInspectorPath": "pi/pi.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/scan",
+          "FontSize": 10,
+          "TitleAlignment": "bottom"
+        }
+      ]
+    },
+    {
+      "UUID": "com.xiaodoudou.helldivers2-stratagems.clear",
+      "Name": "Clear Stratagem Slots",
+      "Tooltip": "Empties every stratagem slot; they are filled again on the next scan.",
+      "Icon": "imgs/clear_icon",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/clear",
+          "FontSize": 10,
+          "TitleAlignment": "bottom"
+        }
+      ]
+    }
+  ]
+}

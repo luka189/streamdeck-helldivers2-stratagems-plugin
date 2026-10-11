@@ -1,0 +1,71 @@
+name: Release
+
+# Pushing a version tag (v0.2.0, v0.3.0-rc.1...) runs the whole test suite and build, then creates the GitHub release with the packaged
+# plugin attached. A step that fails stops the ones after it: nothing is released from a red build.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  # A tag that does not name the version of scanner/Cargo.toml (and of the plugin's manifest.json), or that is not on the main branch, is
+  # not a release
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' scanner/Cargo.toml | head -n 1)
+          manifest=$(python3 -c "import json; print(json.load(open('plugin/com.xiaodoudou.helldivers2-stratagems.sdPlugin/manifest.json'))['Version'])")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::the tag $GITHUB_REF_NAME does not name the version of scanner/Cargo.toml ($version)"
+            exit 1
+          fi
+          # Stream Deck versions are four numbers: 0.2.0 is 0.2.0.0, and a prerelease 0.3.0-rc.1 ships as 0.3.0.0
+          if [ "$manifest" != "${version%%-*}.0" ]; then
+            echo "::error::manifest.json has the version $manifest, expected ${version%%-*}.0"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::the tag $GITHUB_REF_NAME is not on the main branch"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          case "$version" in *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;; *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;; esac
+
+  # the same jobs as on every push (commit messages, format, lint, unit tests, build), which also package the plugin
+  test:
+    needs: check
+    uses: ./.github/workflows/test.yml
+
+  release:
+    needs: [check, test]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: streamdeck-plugin
+          path: dist
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+          PRERELEASE: ${{ needs.check.outputs.prerelease }}
+        run: |
+          flags=""
+          if [ "$PRERELEASE" = "true" ]; then flags="--prerelease"; fi
+          gh release create "$GITHUB_REF_NAME" dist/com.xiaodoudou.helldivers2-stratagems.streamDeckPlugin --verify-tag \
+            --title "Helldivers 2 Stratagems $VERSION" --generate-notes $flags \
+            --notes "Install: download com.xiaodoudou.helldivers2-stratagems.streamDeckPlugin below and open it; Stream Deck installs the plugin. See docs/INSTALLATION.md."

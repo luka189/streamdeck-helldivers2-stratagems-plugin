@@ -1,0 +1,75 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  # the release workflow runs the same jobs before it publishes
+  workflow_call:
+
+jobs:
+  # The commit messages follow Conventional Commits (CONTRIBUTING.md): the commits of a pull request, the title of a pull request into main (it
+  # becomes the message of the squash commit there), and the commits of a push
+  commits:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Tests of the commit check
+        run: python3 tools/commitlint_test.py
+      - name: Commits of the pull request
+        if: github.event_name == 'pull_request'
+        run: python3 tools/commitlint.py --range "$BASE..$HEAD"
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+      - name: Title of the pull request into main
+        if: github.event_name == 'pull_request' && github.base_ref == 'main'
+        run: python3 tools/commitlint.py --title "$TITLE"
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+      - name: Commits of the push
+        if: github.event_name == 'push'
+        run: |
+          if [ "$BEFORE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            python3 tools/commitlint.py --range "$BEFORE..$AFTER"
+          else
+            echo "No earlier commit to compare with (a new branch, a tag or a forced push): nothing to check"
+          fi
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+
+  # The plugin is a Windows program (screen capture and key presses go through the Win32 API), so it is checked, tested and built on Windows.
+  # The packaged plugin is kept as an artifact of the run: the release workflow attaches it to the GitHub release.
+  build:
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: scanner
+      - name: Format
+        working-directory: scanner
+        run: cargo fmt --check
+      - name: Lint
+        working-directory: scanner
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Unit tests
+        working-directory: scanner
+        run: cargo test
+      - name: Build and package the plugin
+        run: ./build.ps1 -Package
+      - uses: actions/upload-artifact@v7
+        with:
+          name: streamdeck-plugin
+          path: dist/com.xiaodoudou.helldivers2-stratagems.streamDeckPlugin
+          if-no-files-found: error

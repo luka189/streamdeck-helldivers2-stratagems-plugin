@@ -1,0 +1,1275 @@
+//! Stream Deck plugin process: launched by Stream Deck, scans the game on a worker thread and
+//! keeps the keys in sync with the stratagem loadout. Writes hd2-plugin.log next to the exe.
+
+use std::collections::HashMap;
+use std::io::Write as _;
+use std::panic::AssertUnwindSafe;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as B64;
+use futures::{SinkExt, StreamExt};
+use serde_json::{Value, json};
+use streamdeck_rs::{ImagePayload, LogMessagePayload, Message, MessageOut, StreamDeckSocket, Target, TitlePayload};
+use tokio::sync::mpsc;
+
+use hd_scanner::capture::{Source, set_dpi_aware};
+use hd_scanner::engine::{self, Config, Engine, GameState, SlotView, Status};
+
+const SLOT: &str = "com.xiaodoudou.helldivers2-stratagems.slot";
+const SCAN: &str = "com.xiaodoudou.helldivers2-stratagems.rescan";
+const CLEAR: &str = "com.xiaodoudou.helldivers2-stratagems.clear";
+// set at runtime too: Stream Deck only reloads manifest images when it restarts
+const CLEAR_SVG: &str = include_str!("../../../tools/icon_src/clear.svg");
+const STEAM_LAUNCH: &str = "steam://rungameid/553850"; // Helldivers 2's Steam app id
+
+type Out = MessageOut<Value, Value, Value>;
+type Loadout = Vec<Option<SlotView>>;
+
+struct Key {
+    action: String,
+    slot: usize,
+    show_name: bool,
+}
+
+enum Event {
+    Loadout(Loadout),
+    State(GameState), // whether the game can be read, and whether a mission is on
+    Standby(bool),    // the game is not running: nothing is scanned until it starts
+
+    Done { context: String, result: Result<(), String> },
+}
+
+struct Stratagem {
+    name: String,
+    code: String,
+    png: PathBuf,
+}
+
+static LOG: OnceLock<(Mutex<std::fs::File>, Instant)> = OnceLock::new();
+
+fn log(msg: impl AsRef<str>) {
+    if let Some((file, start)) = LOG.get() {
+        let mut f = file.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = writeln!(f, "[{:>9.3}] {}", start.elapsed().as_secs_f64(), msg.as_ref());
+    }
+}
+
+/// End any other copy still running (a previous launch Stream Deck lost track of, or one under the
+/// plugin's earlier name hd-plugin.exe): the newest wins.
+fn end_older_instances() {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcessId, OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+    unsafe {
+        let me = GetCurrentProcessId();
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return };
+        let mut e = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut more = Process32FirstW(snap, &mut e).is_ok();
+        while more {
+            let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
+            let name = String::from_utf16_lossy(&e.szExeFile[..len]);
+            if e.th32ProcessID != me
+                && (name.eq_ignore_ascii_case("hd2-plugin.exe") || name.eq_ignore_ascii_case("hd-plugin.exe"))
+                && let Ok(h) = OpenProcess(PROCESS_TERMINATE, false, e.th32ProcessID)
+            {
+                let _ = TerminateProcess(h, 0);
+                let _ = CloseHandle(h);
+                log(format!("ended older instance pid {}", e.th32ProcessID));
+            }
+            more = Process32NextW(snap, &mut e).is_ok();
+        }
+        let _ = CloseHandle(snap);
+    }
+}
+
+/// Log whether this process runs inside a Windows job and which UI restrictions that job imposes:
+/// JOB_OBJECT_UILIMIT_HANDLES would hide other programs' windows (and the foreground window) from us.
+fn log_job() {
+    use windows::Win32::System::JobObjects::{
+        IsProcessInJob, JOBOBJECT_BASIC_UI_RESTRICTIONS, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicUIRestrictions,
+        JobObjectExtendedLimitInformation, QueryInformationJobObject,
+    };
+    use windows::Win32::System::Threading::GetCurrentProcess;
+    unsafe {
+        let mut in_job = windows::core::BOOL(0);
+        let _ = IsProcessInJob(GetCurrentProcess(), None, &mut in_job);
+        if !in_job.as_bool() {
+            log("not in a job");
+            return;
+        }
+        let mut ui = JOBOBJECT_BASIC_UI_RESTRICTIONS::default();
+        let ui_ok = QueryInformationJobObject(
+            None,
+            JobObjectBasicUIRestrictions,
+            &mut ui as *mut _ as *mut _,
+            size_of::<JOBOBJECT_BASIC_UI_RESTRICTIONS>() as u32,
+            None,
+        );
+        let mut ext = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        let ext_ok = QueryInformationJobObject(
+            None,
+            JobObjectExtendedLimitInformation,
+            &mut ext as *mut _ as *mut _,
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            None,
+        );
+        log(format!(
+            "in a job: ui restrictions {:#06x} ({}), limit flags {:#010x} ({})",
+            ui.UIRestrictionsClass.0,
+            if ui_ok.is_ok() { "read" } else { "unreadable" },
+            ext.BasicLimitInformation.LimitFlags.0,
+            if ext_ok.is_ok() { "read" } else { "unreadable" }
+        ));
+    }
+}
+
+/// Stream Deck launches plugins with `-port N -pluginUUID X -registerEvent Y -info {...}`.
+/// Parsed by hand: a strict parse of -info could reject fields from a newer Stream Deck.
+fn launch_args() -> Option<(u16, String, String)> {
+    let a: Vec<String> = std::env::args().collect();
+    let get = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+    Some((get("-port")?.parse().ok()?, get("-pluginUUID")?, get("-registerEvent")?))
+}
+
+fn data_url(mime: &str, bytes: &[u8]) -> String {
+    format!("data:{mime};base64,{}", B64.encode(bytes))
+}
+
+// standby (game not running): keys turn to these greys and stop animating
+const IDLE_FRAME: &str = "#5c5c5c";
+const IDLE_INNER: &str = "#1c1c1c";
+const IDLE_INK: &str = "#9a9a9a";
+
+/// Signal-acquiring tile: the fan of arcs fills in over `step` 0..3; all grey and lit in standby.
+fn acquiring(step: usize, idle: bool) -> String {
+    let (frame, frame_opacity, inner, ink) =
+        if idle { (IDLE_FRAME, 1.0, IDLE_INNER, IDLE_INK) } else { ("#c9b269", 0.45, "#26241a", "#ffffee") };
+    let step = if idle { 3 } else { step };
+    let arc = |r: f64| {
+        let d = r * std::f64::consts::FRAC_1_SQRT_2;
+        format!("M{:.1} {:.1} A{r} {r} 0 0 1 {:.1} {:.1}", 72.0 - d, 96.0 - d, 72.0 + d, 96.0 - d)
+    };
+    let arcs: String = [20.0, 36.0, 52.0]
+        .iter()
+        .enumerate()
+        .map(|(i, &r)| {
+            format!(
+                r##"<path d="{}" fill="none" stroke="{ink}" stroke-width="7" stroke-linecap="round" opacity="{}"/>"##,
+                arc(r),
+                if i < step { 1.0 } else { 0.2 }
+            )
+        })
+        .collect();
+    let svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144"><rect width="144" height="144" fill="{frame}" fill-opacity="{frame_opacity}"/><rect x="11" y="11" width="122" height="122" fill="{inner}"/>{arcs}<circle cx="72" cy="96" r="7" fill="{ink}"/></svg>"##
+    );
+    data_url("image/svg+xml", svg.as_bytes())
+}
+
+/// Clear key, greyed out in standby.
+fn clear_icon(idle: bool) -> String {
+    let svg = if idle {
+        CLEAR_SVG.replace("#dc6455", IDLE_FRAME).replace("#190301", IDLE_INNER).replace("#ffffee", IDLE_INK)
+    } else {
+        CLEAR_SVG.to_string()
+    };
+    data_url("image/svg+xml", svg.as_bytes())
+}
+
+/// Scan key in standby: a start button that launches the game.
+fn start_icon() -> String {
+    let ink = "#ffd23f";
+    let svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144"><rect width="144" height="144" fill="{ink}"/><rect x="11" y="11" width="122" height="122" fill="#363426"/><g transform="translate(72 72)" fill="{ink}" stroke="{ink}" stroke-width="6" stroke-linejoin="round"><circle r="38" fill="none"/><path d="M-11 -19 L22 0 L-11 19 Z"/></g></svg>"##
+    );
+    data_url("image/svg+xml", svg.as_bytes())
+}
+
+/// Scan key: the radar from imgs/scan with its sweep turned by `angle` degrees.
+fn radar(angle: u32, ink: &str) -> String {
+    let svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144"><rect width="144" height="144" fill="{ink}"/><rect x="11" y="11" width="122" height="122" fill="#363426"/><g transform="translate(72 72)" fill="none" stroke="{ink}" stroke-width="6" stroke-linecap="round"><circle r="38"/><circle r="20" stroke-opacity=".5"/><g transform="rotate({angle})"><path d="M0 0 L38 0 A38 38 0 0 0 26.9 -26.9 Z" fill="{ink}" fill-opacity=".22" stroke="none"/><path d="M0 0 L26.9 -26.9"/></g><circle cx="-17" cy="15" r="5.5" fill="{ink}" stroke="none"/></g></svg>"##
+    );
+    data_url("image/svg+xml", svg.as_bytes())
+}
+
+fn blank() -> String {
+    data_url(
+        "image/svg+xml",
+        br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144"><rect width="144" height="144" fill="#000"/></svg>"##,
+    )
+}
+
+const FILL: [f32; 3] = [139.0, 128.0, 112.0]; // the game's beige progress fill
+const CREAM: [f32; 3] = [240.0, 232.0, 214.0]; // glyph and edge line inside the fill
+
+/// The stratagem icon with the game's progress overlay across the whole icon, frame included:
+/// a beige fill with a cream glyph, rising from the bottom while cooling down, coming down from
+/// the top while inbound, covering it all when unavailable.
+fn icon_png(path: &Path, view: &SlotView) -> Option<Vec<u8>> {
+    let covered = match view.status {
+        Status::Unavailable => true,
+        Status::Cooldown | Status::Active => view.fill > 0.0,
+        Status::Ready | Status::Unknown => false,
+    };
+    if !covered && view.badge.is_none() {
+        return std::fs::read(path).ok();
+    }
+    let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).ok()?));
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0u8; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return std::fs::read(path).ok();
+    }
+    let (w, h) = (info.width as usize, info.height as usize);
+    let px = &mut buf[..info.buffer_size()];
+    let n = ((view.fill * h as f32).round() as usize).min(h);
+    let (rows, line) = match view.status {
+        _ if !covered => (0..0, None),
+        Status::Cooldown => (h - n..h, Some(h - n)),
+        Status::Active if n < h => (0..n, Some(n)),
+        _ => (0..h, None),
+    };
+    for y in rows {
+        for x in 0..w {
+            let p = &mut px[(y * w + x) * 4..(y * w + x) * 4 + 3];
+            let lum = 0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32;
+            let c = if lum > 90.0 { CREAM } else { FILL };
+            (p[0], p[1], p[2]) = (c[0] as u8, c[1] as u8, c[2] as u8);
+        }
+    }
+    if let Some(ly) = line {
+        for y in ly.saturating_sub(1)..(ly + 1).min(h) {
+            for x in 0..w {
+                let p = &mut px[(y * w + x) * 4..(y * w + x) * 4 + 3];
+                (p[0], p[1], p[2]) = (CREAM[0] as u8, CREAM[1] as u8, CREAM[2] as u8);
+            }
+        }
+    }
+    if let Some(b) = &view.badge {
+        draw_badge(px, w, h, b);
+    }
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, info.width, info.height);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().ok()?.write_image_data(px).ok()?;
+    }
+    Some(out)
+}
+
+const BADGE_BG: [f32; 3] = [232.0, 229.0, 206.0];
+const BADGE_INK: [f32; 3] = [61.0, 60.0, 39.0];
+
+const BADGE_PAD: (f32, f32) = (7.0, 5.0); // cream margin around the digits in the game, at 1440p
+
+/// Redraw the game's count badge in the icon's bottom-right corner, at the in-game size relative
+/// to the icon (57 px icon at 1440p), smoothed by sampling each key pixel 3x3 times.
+fn draw_badge(px: &mut [u8], w: usize, h: usize, b: &hd_scanner::engine::Badge) {
+    let s = w as f32 / 57.0;
+    let (sw, sh) = (b.w as f32 + 2.0 * BADGE_PAD.0, b.h as f32 + 2.0 * BADGE_PAD.1); // badge size in game pixels
+    let (bw, bh) = (((sw * s).round() as usize).min(w), ((sh * s).round() as usize).min(h));
+    let (ox, oy) = (w - bw, h - bh);
+    for ty in 0..bh {
+        for tx in 0..bw {
+            let mut ink = 0.0f32;
+            for i in 0..3 {
+                for j in 0..3 {
+                    let gx = (tx as f32 + (i as f32 + 0.5) / 3.0) / s - BADGE_PAD.0;
+                    let gy = (ty as f32 + (j as f32 + 0.5) / 3.0) / s - BADGE_PAD.1;
+                    if gx >= 0.0 && gy >= 0.0 && (gx as usize) < b.w && (gy as usize) < b.h {
+                        ink += b.bits[gy as usize * b.w + gx as usize] as u8 as f32;
+                    }
+                }
+            }
+            let t = ink / 9.0;
+            let p = &mut px[((oy + ty) * w + ox + tx) * 4..((oy + ty) * w + ox + tx) * 4 + 4];
+            for c in 0..3 {
+                p[c] = (BADGE_BG[c] * (1.0 - t) + BADGE_INK[c] * t) as u8;
+            }
+            p[3] = 255;
+        }
+    }
+}
+
+/// The game size the plugin found, and how, for the Scan key's panel.
+fn found_size((w, h): (usize, usize), source: Source) -> String {
+    let how = match source {
+        Source::Window | Source::Foreground => "from its window",
+        Source::LastKnown => "where its window was last seen",
+        Source::MainScreen => "the main screen's size: the window itself can't be seen",
+    };
+    format!("{w}x{h} ({how})")
+}
+
+fn set_image(context: &str, image: String) -> Out {
+    MessageOut::SetImage { context: context.into(), payload: ImagePayload { image: Some(image), target: Target::Both, state: None } }
+}
+
+fn set_title(context: &str, title: &str) -> Out {
+    MessageOut::SetTitle { context: context.into(), payload: TitlePayload { title: Some(title.into()), target: Target::Both, state: None } }
+}
+
+/// Whether a press on a cooling slot goes through at `now`: close enough to its end.
+fn near_ready(v: &SlotView, now: Instant) -> bool {
+    v.status == Status::Cooldown
+        && v.ready.is_some_and(|r| r.at.saturating_duration_since(now) <= if r.timed { TIMER_SLACK } else { NEAR_READY })
+}
+
+fn describe(l: &Loadout, names: &[String]) -> String {
+    l.iter()
+        .enumerate()
+        .map(|(k, v)| match v {
+            None => format!("{}: ?", k + 1),
+            Some(v) => format!("{}: {} {:?} {:.0}%", k + 1, names[v.index], v.status, v.fill * 100.0),
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+struct Plugin {
+    keys: HashMap<String, Key>,
+    loadout: Loadout,
+    catalog: Vec<Stratagem>,
+    icons: HashMap<(usize, Status, u8, u64), String>,
+    frame: usize, // animation tick, every ANIM
+    state: GameState,
+    standby: bool, // the game is not running
+}
+
+const ANIM: Duration = Duration::from_millis(200);
+const BURST: Duration = Duration::from_secs(4); // after a call-in, scan fast to catch the game's state change
+const BURST_PERIOD: Duration = Duration::from_millis(50);
+const MENU_SETTLE: Duration = Duration::from_secs(2); // after the HUD appears, before opening the menu
+// A cooldown this close to its estimated end lets a press through anyway: the last sliver of the fill is
+// too thin to measure (if it is not quite ready, the game ignores the code). With a timer read on screen
+// the end is known, and only TIMER_SLACK of it is given away.
+const NEAR_READY: Duration = Duration::from_millis(1500);
+const TIMER_SLACK: Duration = Duration::from_millis(300);
+// at mission start, the menu is tried every MENU_RETRY until it opens, MENU_TRIES times at most (about 20 s)
+const MENU_RETRY: Duration = Duration::from_secs(2);
+const MENU_TRIES: u32 = 10;
+const MENU_OPEN_ROWS: usize = 4; // the open menu lists Reinforce, SoS Beacon and Resupply, plus the loadout
+const GAME_POLL: Duration = Duration::from_secs(2); // how often to check that the game is running
+
+/// Lets a key press wake the scan thread and switch it to fast scans for a while.
+#[derive(Default)]
+struct Wake {
+    until: Mutex<Option<Instant>>,
+    cv: std::sync::Condvar,
+    recheck: std::sync::atomic::AtomicBool, // look for the game process now, not at the next GAME_POLL
+}
+
+impl Wake {
+    fn recheck(&self) {
+        self.recheck.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.cv.notify_one();
+    }
+
+    fn take_recheck(&self) -> bool {
+        self.recheck.swap(false, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn burst(&self) {
+        *self.until.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now() + BURST);
+        self.cv.notify_one();
+    }
+
+    /// Sleep for `normal`, or BURST_PERIOD while a burst lasts; returns early when woken.
+    fn sleep(&self, normal: Duration, spent: Duration) {
+        let guard = self.until.lock().unwrap_or_else(|e| e.into_inner());
+        let period = if guard.is_some_and(|u| Instant::now() < u) { BURST_PERIOD } else { normal };
+        let wait = period.saturating_sub(spent).max(Duration::from_millis(10));
+        let _ = self.cv.wait_timeout(guard, wait);
+    }
+}
+
+impl Plugin {
+    /// An unread slot inside the menu is still acquiring, and so is every slot until the open menu has
+    /// been read once (it always lists Reinforce, SoS Beacon and Resupply before the loadout);
+    /// past the last slot of a read menu it is blank.
+    fn is_acquiring(&self, slot: usize) -> bool {
+        self.loadout.get(slot).is_none_or(|v| v.is_none()) && (self.loadout.len() < 4 || slot < self.loadout.len())
+    }
+
+    fn paint(&mut self, context: &str) -> Vec<Out> {
+        let Some(key) = self.keys.get(context) else { return vec![] };
+        if key.action == CLEAR {
+            return vec![set_image(context, clear_icon(self.standby))];
+        }
+        if key.action == SCAN {
+            if self.standby {
+                return vec![set_image(context, start_icon())];
+            }
+            // the sweep turns while the game is being read, and rests when it cannot be seen
+            let angle = if self.state != GameState::Missing { (self.frame as u32 * 30) % 360 } else { 0 };
+            let ink = match self.state {
+                GameState::Mission => "#7be07b",
+                GameState::Lobby => "#ffd23f",
+                GameState::Missing => "#8a8a8a",
+            };
+            return vec![set_image(context, radar(angle, ink))];
+        }
+        if key.action != SLOT {
+            return vec![];
+        }
+        let (slot, show_name) = (key.slot, key.show_name);
+        match self.loadout.get(slot).cloned().flatten() {
+            Some(v) => {
+                let png = &self.catalog[v.index].png;
+                let step = (v.fill * 72.0).round() as u8;
+                let icon = self
+                    .icons
+                    .entry((v.index, v.status, step, v.badge.as_ref().map_or(0, |b| b.hash)))
+                    .or_insert_with(|| icon_png(png, &v).map(|b| data_url("image/png", &b)).unwrap_or_else(blank))
+                    .clone();
+                let title = if show_name { self.catalog[v.index].name.as_str() } else { "" };
+                vec![set_image(context, icon), set_title(context, title)]
+            }
+            None => {
+                let image = if self.is_acquiring(slot) { acquiring(self.frame / 3 % 4, self.standby) } else { blank() };
+                vec![set_image(context, image), set_title(context, "")]
+            }
+        }
+    }
+
+    fn paint_where(&mut self, keep: impl Fn(&Key) -> bool) -> Vec<Out> {
+        let contexts: Vec<String> = self.keys.iter().filter(|(_, k)| keep(k)).map(|(c, _)| c.clone()).collect();
+        contexts.iter().flat_map(|c| self.paint(c)).collect()
+    }
+
+    fn paint_slots(&mut self) -> Vec<Out> {
+        self.paint_where(|k| k.action == SLOT)
+    }
+
+    /// Settings of a key; a new slot key takes the first free slot and saves it.
+    fn register(&mut self, action: &str, context: &str, settings: &Value) -> Vec<Out> {
+        let mut out = Vec::new();
+        let given = settings.get("slot").and_then(Value::as_u64).filter(|&n| n > 0).map(|n| n as usize - 1);
+        let slot = match given {
+            Some(s) => s,
+            None if action == SLOT => {
+                let used: Vec<usize> =
+                    self.keys.iter().filter(|(c, k)| c.as_str() != context && k.action == SLOT).map(|(_, k)| k.slot).collect();
+                let s = (0..).find(|s| !used.contains(s)).unwrap_or(0);
+                let mut saved = settings.as_object().cloned().unwrap_or_default();
+                saved.insert("slot".into(), json!(s + 1));
+                out.push(MessageOut::SetSettings { context: context.into(), payload: Value::Object(saved) });
+                s
+            }
+            None => 0,
+        };
+        let show_name = settings.get("show_name").and_then(Value::as_bool).unwrap_or(false);
+        self.keys.insert(context.into(), Key { action: action.into(), slot, show_name });
+        out.extend(self.paint(context));
+        out
+    }
+}
+
+/// Scans on its own thread. Sends the loadout whenever what a key would show changes (including
+/// cooldown progress drained by the clock while the menu is closed). Survives a scan that panics.
+fn scan_thread(engine: Arc<Mutex<Engine>>, cfg: Arc<Mutex<Config>>, tx: mpsc::UnboundedSender<Event>, names: Vec<String>, wake: Arc<Wake>) {
+    let mut last: Loadout = Vec::new();
+    let (mut last_err, mut was_state): (Option<String>, Option<GameState>) = (None, None);
+    let mut last_source = None;
+    let (mut mission_since, mut menu_tries, mut menu_tried): (Option<Instant>, u32, Option<Instant>) = (None, 0, None);
+    let mut menu_skip: Option<String> = None; // why the last mission-start menu read was refused, logged once
+    let (mut beat, mut scans, mut focused) = (Instant::now(), 0u32, 0u32);
+    let (mut running, mut looked): (Option<bool>, Option<Instant>) = (None, None);
+    loop {
+        let c = cfg.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let t = Instant::now();
+        // standby while the game is not running: no capture at all, only a process check now and then
+        if wake.take_recheck() || looked.is_none_or(|l| l.elapsed() >= GAME_POLL) {
+            looked = Some(t);
+            let up = hd_scanner::capture::running(&c.process_name);
+            if running != Some(up) {
+                log(if up { "game running: scanning" } else { "game not running: standby" });
+                if !up && running.is_some() {
+                    // the loadout belonged to the game that just closed
+                    let mut e = engine.lock().unwrap_or_else(|p| p.into_inner());
+                    e.clear();
+                    last = e.loadout();
+                    drop(e);
+                    if tx.send(Event::Loadout(last.clone())).is_err() {
+                        return;
+                    }
+                }
+                running = Some(up);
+                if tx.send(Event::Standby(!up)).is_err() {
+                    return;
+                }
+            }
+        }
+        if running == Some(false) {
+            wake.sleep(GAME_POLL, t.elapsed());
+            continue;
+        }
+        let (l, ms, err, state) = {
+            let mut e = engine.lock().unwrap_or_else(|p| p.into_inner());
+            if c.auto_scan {
+                if std::panic::catch_unwind(AssertUnwindSafe(|| e.scan(&c))).is_err() {
+                    log("scan panicked; carrying on");
+                }
+                scans += 1;
+                focused += e.focused as u32;
+            }
+            if e.source != last_source {
+                log(format!("game position from {:?}", e.source));
+                last_source = e.source;
+            }
+            (e.loadout(), e.scan_ms, e.last_error.clone(), e.game_state())
+        };
+        if err != last_err {
+            match &err {
+                Some(msg) => log(format!("cannot read the game: {msg}")),
+                None => log("reading the game"),
+            }
+            last_err = err;
+        }
+        if was_state != Some(state) {
+            log(format!("game state {state:?}"));
+            if state == GameState::Mission {
+                (mission_since, menu_tries, menu_tried, menu_skip) = (Some(Instant::now()), 0, None, None);
+            }
+            was_state = Some(state);
+            if tx.send(Event::State(state)).is_err() {
+                return;
+            }
+        }
+        // a mission has started and the loadout is not known yet: open the menu and read it. The HUD shows
+        // before the player can open the menu (hellpod, landing), so a try that finds no open menu is
+        // retried soon, until the loadout is known, whoever opened the menu
+        if c.auto_menu_scan
+            && state == GameState::Mission
+            && l.iter().flatten().count() < MENU_OPEN_ROWS
+            && menu_tries < MENU_TRIES
+            && mission_since.is_some_and(|t| t.elapsed() >= MENU_SETTLE)
+            && menu_tried.is_none_or(|t: Instant| t.elapsed() >= MENU_RETRY)
+        {
+            menu_tried = Some(Instant::now());
+            let mut e = engine.lock().unwrap_or_else(|p| p.into_inner());
+            match e.scan_menu(&c) {
+                Ok(_) => {
+                    // only presses count as tries: a refused one (game not in front) sent nothing
+                    menu_tries += 1;
+                    if e.loadout().iter().flatten().count() >= MENU_OPEN_ROWS {
+                        log(format!("mission start: read the loadout from the menu (try {menu_tries})"));
+                    } else if menu_tries < MENU_TRIES {
+                        log(format!("mission start: the menu did not open (try {menu_tries}), trying again"));
+                    } else {
+                        log(format!("mission start: the menu did not open after {menu_tries} tries; open it once, or press Scan"));
+                    }
+                }
+                Err(err) if menu_skip.as_ref() != Some(&err) => {
+                    log(format!("mission start: menu read skipped: {err}"));
+                    menu_skip = Some(err);
+                }
+                Err(_) => {}
+            }
+            let fresh = e.loadout();
+            drop(e);
+            if tx.send(Event::Loadout(fresh)).is_err() {
+                return;
+            }
+            continue; // `l` above predates the menu read
+        }
+        if l != last {
+            log(format!("loadout {}", describe(&l, &names)));
+            if tx.send(Event::Loadout(l.clone())).is_err() {
+                log("plugin loop gone; scan thread stops");
+                return;
+            }
+            last = l;
+        }
+        if beat.elapsed() >= Duration::from_secs(10) {
+            log(format!("heartbeat: {scans} scans, {focused} with the game window visible, last scan {ms:.1} ms"));
+            (beat, scans, focused) = (Instant::now(), 0, 0);
+        }
+        wake.sleep(Duration::from_secs_f64(c.scan_period), t.elapsed());
+    }
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    set_dpi_aware();
+    let dir = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_default();
+    let exe_path = dir.join("hd2-plugin.exe");
+    let exe_built = std::fs::metadata(&exe_path).and_then(|m| m.modified()).ok();
+    // a redeploy or crash restarts the plugin: keep the previous run's log for diagnosis
+    let _ = std::fs::rename(dir.join("hd2-plugin.log"), dir.join("hd2-plugin.prev.log"));
+    if let Ok(f) = std::fs::File::create(dir.join("hd2-plugin.log")) {
+        let _ = LOG.set((Mutex::new(f), Instant::now()));
+    }
+    std::panic::set_hook(Box::new(|info| log(format!("panic: {info}"))));
+    let Some((port, uuid, event)) = launch_args() else {
+        eprintln!("hd2-plugin is started by Stream Deck (expects -port, -pluginUUID, -registerEvent)");
+        std::process::exit(2);
+    };
+    log(format!("start pid {} port {port}", std::process::id()));
+    log_job();
+    end_older_instances();
+    let data = dir.join("data");
+
+    let socket = match StreamDeckSocket::<Value, Value, Value, Value>::connect(port, event, uuid.clone()).await {
+        Ok(s) => s,
+        Err(e) => {
+            log(format!("cannot connect to Stream Deck: {e}"));
+            std::process::exit(1);
+        }
+    };
+    let (mut sink, mut stream) = socket.split();
+
+    let engine = match Engine::new(&data) {
+        Ok(e) => Arc::new(Mutex::new(e)),
+        Err(e) => {
+            log(format!("cannot load data: {e}"));
+            let _ = sink.send(MessageOut::LogMessage { payload: LogMessagePayload { message: format!("hd2-plugin: {e}") } }).await;
+            std::process::exit(1);
+        }
+    };
+    let catalog: Vec<Stratagem> = engine
+        .lock()
+        .unwrap()
+        .matcher
+        .catalog
+        .iter()
+        .map(|s| Stratagem { name: s.name.clone(), code: s.code.clone(), png: data.join("icons_144").join(s.png()) })
+        .collect();
+    let names: Vec<String> = catalog.iter().map(|s| s.name.clone()).collect();
+    log(format!("loaded {} stratagems", catalog.len()));
+    let cfg = Arc::new(Mutex::new(Config::default()));
+    let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
+    let wake = Arc::new(Wake::default());
+    {
+        let (engine, cfg, tx, wake) = (engine.clone(), cfg.clone(), tx.clone(), wake.clone());
+        std::thread::spawn(move || scan_thread(engine, cfg, tx, names, wake));
+    }
+
+    let _ = sink.send(MessageOut::GetGlobalSettings { context: uuid.clone() }).await;
+    let mut p = Plugin {
+        keys: HashMap::new(),
+        loadout: Vec::new(),
+        catalog,
+        icons: HashMap::new(),
+        frame: 0,
+        state: GameState::Missing,
+        standby: false,
+    };
+    let mut anim = tokio::time::interval(ANIM);
+
+    loop {
+        let out: Vec<Out> = tokio::select! {
+            msg = stream.next() => match msg {
+                None => {
+                    log("Stream Deck closed the connection; exiting");
+                    break;
+                }
+                Some(Err(e)) => {
+                    log(format!("bad message: {e}"));
+                    continue;
+                }
+                Some(Ok(m)) => match m {
+                    Message::WillAppear { action, context, payload, .. } => p.register(&action, &context, &payload.settings),
+                    Message::DidReceiveSettings { action, context, payload, .. } => p.register(&action, &context, &payload.settings),
+                    Message::WillDisappear { context, .. } => {
+                        p.keys.remove(&context);
+                        vec![]
+                    }
+                    Message::DidReceiveGlobalSettings { payload } => {
+                        *cfg.lock().unwrap() = Config::from_json(&payload.settings);
+                        log(format!("settings: {:?}", cfg.lock().unwrap()));
+                        vec![]
+                    }
+                    // the Scan key's panel shows the game size the plugin found, next to the size setting
+                    Message::PropertyInspectorDidAppear { action, context, .. } if action == SCAN => {
+                        let e = engine.lock().unwrap_or_else(|p| p.into_inner());
+                        let detected = if p.standby { None } else { e.measured.zip(e.source).map(|(size, source)| found_size(size, source)) };
+                        drop(e);
+                        vec![MessageOut::SendToPropertyInspector { action, context, payload: json!({ "detected": detected }) }]
+                    }
+                    Message::KeyDown { action, context, .. } => {
+                        let c = cfg.lock().unwrap().clone();
+                        let tx = tx.clone();
+                        match action.as_str() {
+                            SLOT => {
+                                let slot = p.keys.get(&context).map_or(usize::MAX, |k| k.slot);
+                                match p.loadout.get(slot).cloned().flatten() {
+                                    // nothing there, or the game would refuse it right now
+                                    None => vec![MessageOut::ShowAlert { context }],
+                                    // a cooldown about to end lets the press through (see NEAR_READY)
+                                    Some(v)
+                                        if matches!(v.status, Status::Cooldown | Status::Unavailable | Status::Active)
+                                            && !near_ready(&v, Instant::now()) =>
+                                    {
+                                        let left = v.ready.map_or(String::new(), |r| {
+                                            let secs = r.at.saturating_duration_since(Instant::now()).as_secs_f32();
+                                            format!(", {secs:.1} s left by {}", if r.timed { "the timer" } else { "the fill" })
+                                        });
+                                        log(format!("slot {} pressed while {:?}{left}", slot + 1, v.status));
+                                        vec![MessageOut::ShowAlert { context }]
+                                    }
+                                    Some(v) => {
+                                        let code = p.catalog[v.index].code.clone();
+                                        log(format!("calling {} ({code})", p.catalog[v.index].name));
+                                        let (engine, wake) = (engine.clone(), wake.clone());
+                                        tokio::task::spawn_blocking(move || {
+                                            let result = engine::fire(&code, &c);
+                                            if result.is_ok() {
+                                                let mut e = engine.lock().unwrap_or_else(|p| p.into_inner());
+                                                if e.mark_called(v.index) {
+                                                    let _ = tx.send(Event::Loadout(e.loadout()));
+                                                }
+                                                drop(e);
+                                                wake.burst();
+                                            }
+                                            let _ = tx.send(Event::Done { context, result });
+                                        });
+                                        vec![]
+                                    }
+                                }
+                            }
+                            // the game is not running: start it through Steam; scanning resumes once it runs.
+                            // Started some other way since the last check: no second launch, just scan now.
+                            SCAN if p.standby && hd_scanner::capture::running(&c.process_name) => {
+                                log("start pressed while the game runs: scanning now");
+                                wake.recheck();
+                                vec![MessageOut::ShowOk { context }]
+                            }
+                            SCAN if p.standby => {
+                                log(format!("starting the game: {STEAM_LAUNCH}"));
+                                match std::process::Command::new("explorer.exe").arg(STEAM_LAUNCH).spawn() {
+                                    Ok(_) => vec![MessageOut::ShowOk { context }],
+                                    Err(e) => {
+                                        log(format!("cannot start the game: {e}"));
+                                        vec![MessageOut::ShowAlert { context }]
+                                    }
+                                }
+                            }
+                            SCAN => {
+                                let engine = engine.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    let mut e = engine.lock().unwrap_or_else(|p| p.into_inner());
+                                    let result = e.scan_menu(&c).map(|_| ());
+                                    let _ = tx.send(Event::Loadout(e.loadout()));
+                                    let _ = tx.send(Event::Done { context, result });
+                                });
+                                vec![]
+                            }
+                            CLEAR => {
+                                let mut e = engine.lock().unwrap_or_else(|p| p.into_inner());
+                                e.clear();
+                                p.loadout = e.loadout();
+                                log("loadout cleared");
+                                let mut out = p.paint_slots();
+                                out.push(MessageOut::ShowOk { context });
+                                out
+                            }
+                            _ => vec![],
+                        }
+                    }
+                    _ => vec![],
+                },
+            },
+            Some(ev) = rx.recv() => match ev {
+                Event::Loadout(l) => {
+                    if l != p.loadout {
+                        p.loadout = l;
+                        p.paint_slots()
+                    } else {
+                        vec![]
+                    }
+                }
+                Event::State(s) => {
+                    p.state = s;
+                    p.paint_where(|k| k.action == SCAN)
+                }
+                Event::Standby(on) => {
+                    p.standby = on;
+                    p.paint_where(|_| true)
+                }
+                Event::Done { context, result: Ok(()) } => vec![MessageOut::ShowOk { context }],
+                Event::Done { context, result: Err(e) } => {
+                    log(format!("key action failed: {e}"));
+                    vec![
+                        MessageOut::ShowAlert { context },
+                        MessageOut::LogMessage { payload: LogMessagePayload { message: format!("hd2-plugin: {e}") } },
+                    ]
+                }
+            },
+            _ = anim.tick() => {
+                p.frame += 1;
+                // build.ps1 renames the running exe aside and puts a new build in its place: hand over to it
+                // (a running process keeps reporting its original path, so the file's timestamp is compared)
+                if p.frame.is_multiple_of(10) && std::fs::metadata(&exe_path).and_then(|m| m.modified()).ok() != exe_built {
+                    log("a new build replaced this exe; exiting so Stream Deck starts it");
+                    std::process::exit(0);
+                }
+                // acquiring tiles step every 600 ms, the radar every 200 ms; nothing moves in standby
+                let step_acquiring = p.frame.is_multiple_of(3) && !p.standby;
+                let (state, standby) = (p.state, p.standby);
+                let acquiring: Vec<usize> = p.keys.values().filter(|k| k.action == SLOT && p.is_acquiring(k.slot)).map(|k| k.slot).collect();
+                p.paint_where(|k| {
+                    (k.action == SCAN && !standby && state != GameState::Missing)
+                        || (step_acquiring && k.action == SLOT && acquiring.contains(&k.slot))
+                })
+            }
+        };
+        for m in out {
+            if sink.send(m).await.is_err() {
+                log("send to Stream Deck failed; exiting");
+                return;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use hd_scanner::engine::Badge;
+
+    fn data() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../data")
+    }
+
+    fn icon() -> PathBuf {
+        data().join("icons_144/Reinforce_Stratagem_Icon_Background.png")
+    }
+
+    fn sv(index: usize, status: Status, fill: f32, badge: Option<Badge>) -> SlotView {
+        SlotView { index, status, fill, badge, ready: None }
+    }
+
+    fn plugin(loadout: Loadout) -> Plugin {
+        let catalog = vec![Stratagem { name: "Reinforce".into(), code: "UDRLU".into(), png: icon() }];
+        Plugin { keys: HashMap::new(), loadout, catalog, icons: HashMap::new(), frame: 0, state: GameState::Missing, standby: false }
+    }
+
+    /// The SVG text inside a data URL.
+    fn svg(url: &str) -> String {
+        let b64 = url.strip_prefix("data:image/svg+xml;base64,").unwrap_or_else(|| panic!("not an SVG data URL: {url:.40}"));
+        String::from_utf8(B64.decode(b64).expect("base64")).expect("utf-8")
+    }
+
+    /// Balanced tags, quoted attributes, and no leftovers of a format! template.
+    fn assert_well_formed(svg: &str) {
+        assert!(svg.starts_with("<svg ") && svg.trim_end().ends_with("</svg>"), "{svg}");
+        assert!(svg.contains(r#"xmlns="http://www.w3.org/2000/svg""#) && svg.contains(r#"viewBox="0 0 144 144""#), "{svg}");
+        assert!(!svg.contains(['{', '}']) && !svg.contains("NaN") && !svg.contains("inf"), "{svg}");
+        let mut open = Vec::new();
+        let mut rest = svg;
+        while let Some(start) = rest.find('<') {
+            assert!(rest[..start].trim().is_empty(), "text outside tags: {:?}", &rest[..start]);
+            let end = start + rest[start..].find('>').expect("unclosed '<'");
+            let tag = &rest[start + 1..end];
+            assert!(!tag.contains('<') && tag.matches('"').count().is_multiple_of(2), "bad tag <{tag}>");
+            if let Some(name) = tag.strip_prefix('/') {
+                assert_eq!(open.pop(), Some(name.trim()), "closing </{name}>");
+            } else if !tag.ends_with('/') {
+                open.push(tag.split_whitespace().next().expect("tag name"));
+            }
+            rest = &rest[end + 1..];
+        }
+        assert!(rest.trim().is_empty() && open.is_empty(), "unclosed {open:?}");
+    }
+
+    fn decode(png_bytes: &[u8]) -> (usize, usize, Vec<u8>) {
+        let mut reader = png::Decoder::new(std::io::Cursor::new(png_bytes)).read_info().expect("png");
+        let mut buf = vec![0u8; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut buf).expect("frame");
+        assert_eq!((info.color_type, info.bit_depth), (png::ColorType::Rgba, png::BitDepth::Eight));
+        buf.truncate(info.buffer_size());
+        (info.width as usize, info.height as usize, buf)
+    }
+
+    #[test]
+    fn a_press_goes_through_only_near_the_end_of_a_cooldown() {
+        use hd_scanner::engine::ReadyAt;
+        let now = Instant::now();
+        let cooling = |secs: f32, timed: bool| SlotView {
+            ready: Some(ReadyAt { at: now + Duration::from_secs_f32(secs), timed }),
+            ..sv(0, Status::Cooldown, 0.1, None)
+        };
+        // estimated from the fill: in seconds left, whatever the cooldown's length (it used to be 5% of the fill,
+        // 15 s of a 300 s cooldown)
+        assert!(near_ready(&cooling(1.4, false), now));
+        assert!(!near_ready(&cooling(1.6, false), now));
+        assert!(!near_ready(&cooling(9.0, false), now));
+        // a timer read on screen: only a few hundred milliseconds early
+        assert!(near_ready(&cooling(0.25, true), now));
+        assert!(!near_ready(&cooling(0.5, true), now));
+        assert!(!near_ready(&cooling(1.4, true), now));
+        assert!(near_ready(&cooling(0.0, true), now + Duration::from_secs(1)), "past the end");
+        // nothing else counts as near ready
+        assert!(!near_ready(&sv(0, Status::Cooldown, 0.0, None), now), "no estimate");
+        let active = SlotView { status: Status::Active, ..cooling(0.1, true) };
+        assert!(!near_ready(&active, now));
+    }
+
+    #[test]
+    fn describe_lists_each_slot() {
+        let names = vec!["Reinforce".to_string(), "Orbital Laser".to_string()];
+        let l: Loadout = vec![Some(sv(0, Status::Ready, 0.0, None)), None, Some(sv(1, Status::Cooldown, 0.5, None))];
+        assert_eq!(describe(&l, &names), "1: Reinforce Ready 0% | 2: ? | 3: Orbital Laser Cooldown 50%");
+        assert_eq!(describe(&vec![Some(sv(1, Status::Unavailable, 1.0, None))], &names), "1: Orbital Laser Unavailable 100%");
+        assert_eq!(describe(&vec![], &names), "");
+    }
+
+    #[test]
+    fn data_url_is_base64() {
+        assert_eq!(data_url("image/png", b"abc"), "data:image/png;base64,YWJj");
+        assert_eq!(data_url("image/svg+xml", b""), "data:image/svg+xml;base64,");
+    }
+
+    #[test]
+    fn acquiring_lights_one_more_arc_per_step() {
+        let mut seen = Vec::new();
+        for step in 0..=3 {
+            let s = svg(&acquiring(step, false));
+            assert_well_formed(&s);
+            assert_eq!(s.matches(r#" opacity="1""#).count(), step, "step {step}");
+            assert_eq!(s.matches(r#" opacity="0.2""#).count(), 3 - step, "step {step}");
+            assert!(s.contains("#c9b269") && !s.contains(IDLE_FRAME));
+            seen.push(s);
+        }
+        seen.dedup();
+        assert_eq!(seen.len(), 4, "every step draws differently");
+    }
+
+    #[test]
+    fn acquiring_in_standby_is_grey_and_still() {
+        let idle: Vec<String> = (0..4).map(|step| svg(&acquiring(step, true))).collect();
+        assert!(idle.iter().all(|s| s == &idle[0]), "standby does not animate");
+        assert_well_formed(&idle[0]);
+        assert_eq!(idle[0].matches(r#" opacity="1""#).count(), 3, "all arcs lit");
+        assert!([IDLE_FRAME, IDLE_INNER, IDLE_INK].iter().all(|c| idle[0].contains(c)));
+        assert!(!idle[0].contains("#c9b269") && !idle[0].contains("#ffffee"));
+    }
+
+    #[test]
+    fn radar_turns_its_sweep_in_the_given_colour() {
+        for (angle, ink) in [(0, "#8a8a8a"), (90, "#7be07b"), (330, "#ffd23f")] {
+            let s = svg(&radar(angle, ink));
+            assert_well_formed(&s);
+            assert!(s.contains(&format!("rotate({angle})")) && s.contains(&format!(r#"fill="{ink}""#)), "{s}");
+        }
+        assert_ne!(radar(0, "#7be07b"), radar(30, "#7be07b"));
+    }
+
+    #[test]
+    fn start_icon_and_blank_are_valid_svg() {
+        let start = svg(&start_icon());
+        assert_well_formed(&start);
+        assert!(start.contains("#ffd23f"));
+        assert_ne!(start_icon(), radar(0, "#ffd23f"));
+        let b = svg(&blank());
+        assert_well_formed(&b);
+        assert!(b.contains(r##"fill="#000""##));
+    }
+
+    #[test]
+    fn clear_icon_greys_out_in_standby() {
+        assert_eq!(svg(&clear_icon(false)), CLEAR_SVG);
+        assert_well_formed(CLEAR_SVG);
+        let idle = svg(&clear_icon(true));
+        assert_well_formed(&idle);
+        for (live, grey) in [("#dc6455", IDLE_FRAME), ("#190301", IDLE_INNER), ("#ffffee", IDLE_INK)] {
+            assert!(CLEAR_SVG.contains(live), "clear.svg no longer uses {live}: update clear_icon");
+            assert!(!idle.contains(live) && idle.contains(grey), "{live} -> {grey}");
+        }
+    }
+
+    #[test]
+    fn icon_png_passes_the_file_through_when_nothing_is_drawn() {
+        let file = std::fs::read(icon()).unwrap();
+        for v in [
+            sv(0, Status::Ready, 0.0, None),
+            sv(0, Status::Unknown, 0.7, None),
+            sv(0, Status::Cooldown, 0.0, None),
+            sv(0, Status::Active, 0.0, None),
+        ] {
+            assert_eq!(icon_png(&icon(), &v).as_deref(), Some(&file[..]), "{v:?}");
+        }
+        assert_eq!(icon_png(Path::new("no/such/icon.png"), &sv(0, Status::Ready, 0.0, None)), None);
+        assert_eq!(icon_png(Path::new("no/such/icon.png"), &sv(0, Status::Unavailable, 1.0, None)), None);
+        // not 8-bit RGBA: passed through untouched rather than drawn on
+        let grey = data().join("status/arrow_up.png");
+        assert_eq!(icon_png(&grey, &sv(0, Status::Cooldown, 0.5, None)), std::fs::read(&grey).ok());
+    }
+
+    #[test]
+    fn icon_png_draws_the_fill_from_the_right_end() {
+        let (w, h, src) = decode(&std::fs::read(icon()).unwrap());
+        let fill = FILL.map(|c| c as u8);
+        let cream = CREAM.map(|c| c as u8);
+        // (status, fill, rows covered, rows that must stay untouched; the edge line takes a row more)
+        let cases = [
+            (Status::Cooldown, 0.5, 72..h, 0..71),
+            (Status::Active, 0.25, 0..36, 37..h),
+            (Status::Unavailable, 0.0, 0..h, 0..0),
+            (Status::Unavailable, 0.4, 0..h, 0..0),
+        ];
+        for (status, f, covered, clean) in cases {
+            let (ow, oh, px) = decode(&icon_png(&icon(), &sv(0, status, f, None)).expect("drawn"));
+            assert_eq!((ow, oh), (w, h), "{status:?}: same size as the icon");
+            for y in 0..h {
+                for x in 0..w {
+                    let p = (y * w + x) * 4;
+                    let (got, was) = (&px[p..p + 4], &src[p..p + 4]);
+                    assert_eq!(got[3], was[3], "{status:?} ({x},{y}): alpha kept");
+                    if clean.contains(&y) {
+                        assert_eq!(got, was, "{status:?} ({x},{y}) changed");
+                    } else if covered.contains(&y) {
+                        assert!(got[..3] == fill || got[..3] == cream, "{status:?} ({x},{y}) = {got:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn icon_png_redraws_the_badge_in_the_corner() {
+        let (w, h, src) = decode(&std::fs::read(icon()).unwrap());
+        // a 3x5 block of ink stands in for a digit
+        let badge = Badge { hash: 7, w: 3, h: 5, bits: Arc::new(vec![true; 15]) };
+        let (_, _, px) = decode(&icon_png(&icon(), &sv(0, Status::Ready, 0.0, Some(badge))).expect("drawn"));
+        // (3 + 2 * 7) x (5 + 2 * 5) game pixels at 144 / 57 key pixels each
+        let (bw, bh) = (43, 38);
+        let at = |x: usize, y: usize| &px[(y * w + x) * 4..(y * w + x) * 4 + 4];
+        for y in 0..h {
+            for x in 0..w {
+                if x < w - bw || y < h - bh {
+                    assert_eq!(at(x, y), &src[(y * w + x) * 4..(y * w + x) * 4 + 4], "({x},{y}) outside the badge changed");
+                } else {
+                    assert_eq!(at(x, y)[3], 255, "badge is opaque");
+                }
+            }
+        }
+        assert_eq!(at(w - bw, h - bh)[..3], BADGE_BG.map(|c| c as u8), "margin is the badge colour");
+        assert_eq!(at(w - 1, h - 1)[..3], BADGE_BG.map(|c| c as u8));
+        assert_eq!(at(w - bw + 21, h - bh + 19)[..3], BADGE_INK.map(|c| c as u8), "digit ink in the middle");
+    }
+
+    #[test]
+    fn acquiring_until_the_open_menu_is_read() {
+        let v = |i| Some(sv(i, Status::Ready, 0.0, None));
+        // nothing read yet: every key waits
+        let p = plugin(vec![]);
+        assert!((0..12).all(|s| p.is_acquiring(s)));
+        // only the closed HUD's few rows so far: unread keys keep waiting, past the end too
+        let p = plugin(vec![v(0), None, v(0)]);
+        assert_eq!((0..6).map(|s| p.is_acquiring(s)).collect::<Vec<_>>(), [false, true, false, true, true, true]);
+        // the open menu was read (4 or more slots): gaps inside it wait, keys past it are blank
+        let p = plugin(vec![v(0), v(0), v(0), None, v(0)]);
+        assert_eq!((0..7).map(|s| p.is_acquiring(s)).collect::<Vec<_>>(), [false, false, false, true, false, false, false]);
+    }
+
+    fn image_of(out: &Out) -> &str {
+        match out {
+            MessageOut::SetImage { payload, .. } => payload.image.as_deref().expect("image"),
+            other => panic!("expected SetImage, got {other:?}"),
+        }
+    }
+
+    fn title_of(out: &Out) -> &str {
+        match out {
+            MessageOut::SetTitle { payload, .. } => payload.title.as_deref().expect("title"),
+            other => panic!("expected SetTitle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_new_slot_key_takes_the_first_free_slot_and_saves_it() {
+        let mut p = plugin(vec![]);
+        let out = p.register(SLOT, "a", &json!({}));
+        match &out[0] {
+            MessageOut::SetSettings { context, payload } => assert_eq!((context.as_str(), &payload["slot"]), ("a", &json!(1))),
+            other => panic!("expected SetSettings, got {other:?}"),
+        }
+        assert_eq!(out.len(), 3, "settings, image, title");
+        let out = p.register(SLOT, "b", &json!({ "show_name": true }));
+        match &out[0] {
+            MessageOut::SetSettings { payload, .. } => assert_eq!(payload, &json!({ "show_name": true, "slot": 2 })),
+            other => panic!("expected SetSettings, got {other:?}"),
+        }
+        let out = p.register(SLOT, "c", &json!({ "slot": 7 }));
+        assert_eq!(out.len(), 2, "a saved slot is not saved again");
+        assert_eq!((p.keys["a"].slot, p.keys["b"].slot, p.keys["c"].slot), (0, 1, 6));
+        assert!(p.keys["b"].show_name && !p.keys["a"].show_name);
+        // slot 0 in the settings means none; a key re-registering skips its own slot when looking
+        p.register(SLOT, "d", &json!({ "slot": 0 }));
+        assert_eq!(p.keys["d"].slot, 2);
+        p.register(SLOT, "a", &json!({}));
+        assert_eq!(p.keys["a"].slot, 0);
+        // other actions do not take slots
+        assert!(p.register(SCAN, "s", &json!({})).iter().all(|m| !matches!(m, MessageOut::SetSettings { .. })));
+    }
+
+    #[test]
+    fn slot_keys_paint_the_icon_or_a_placeholder() {
+        let mut p = plugin(vec![Some(sv(0, Status::Ready, 0.0, None)), None, None, None, Some(sv(0, Status::Cooldown, 0.5, None))]);
+        p.register(SLOT, "named", &json!({ "slot": 1, "show_name": true }));
+        p.register(SLOT, "plain", &json!({ "slot": 5 }));
+        p.register(SLOT, "gap", &json!({ "slot": 2 }));
+        p.register(SLOT, "past", &json!({ "slot": 9 }));
+        let out = p.paint("named");
+        assert!(image_of(&out[0]).starts_with("data:image/png;base64,"));
+        assert_eq!(title_of(&out[1]), "Reinforce");
+        let out = p.paint("plain");
+        assert!(image_of(&out[0]).starts_with("data:image/png;base64,"));
+        assert_eq!(title_of(&out[1]), "");
+        assert_eq!(image_of(&p.paint("gap")[0]), acquiring(0, false));
+        assert_eq!(image_of(&p.paint("past")[0]), blank());
+        assert_eq!(p.icons.len(), 2, "one cached icon per (stratagem, status, fill step, badge)");
+        assert!(p.paint("unknown context").is_empty());
+    }
+
+    #[test]
+    fn scan_and_clear_keys_follow_the_game_state() {
+        let mut p = plugin(vec![]);
+        p.register(SCAN, "scan", &json!({}));
+        p.register(CLEAR, "clear", &json!({}));
+        p.frame = 5;
+        assert_eq!(image_of(&p.paint("scan")[0]), radar(0, "#8a8a8a"), "game missing: grey, at rest");
+        p.state = GameState::Lobby;
+        assert_eq!(image_of(&p.paint("scan")[0]), radar(150, "#ffd23f"));
+        p.state = GameState::Mission;
+        assert_eq!(image_of(&p.paint("scan")[0]), radar(150, "#7be07b"));
+        assert_eq!(image_of(&p.paint("clear")[0]), clear_icon(false));
+        p.standby = true;
+        assert_eq!(image_of(&p.paint("scan")[0]), start_icon());
+        assert_eq!(image_of(&p.paint("clear")[0]), clear_icon(true));
+    }
+
+    /// Not a check: plays a scripted mission through the plugin's own painting code and writes every frame's
+    /// key images to `target/demo/frames.json`, which `tools/make_demo_gif.py` turns into `docs/img/demo.gif`.
+    /// cargo test --bin hd2-plugin -- --ignored --nocapture demo_frames
+    #[test]
+    #[ignore = "generator for docs/img/demo.gif"]
+    fn demo_frames() {
+        use hd_scanner::img::Img;
+        use hd_scanner::matcher::{Matcher, column_box};
+
+        let data = data();
+        let mut m = Matcher::load(&data).expect("catalog");
+        let catalog: Vec<Stratagem> = m
+            .catalog
+            .iter()
+            .map(|s| Stratagem { name: s.name.clone(), code: s.code.clone(), png: data.join("icons_144").join(s.png()) })
+            .collect();
+        let idx = |name: &str| catalog.iter().position(|s| s.name == name).unwrap_or_else(|| panic!("no {name}"));
+        let (reinforce, sos, resupply) = (idx("Reinforce"), idx("SoS Beacon"), idx("Resupply"));
+        let (laser, quasar, warp, frv) =
+            (idx("Orbital Laser"), idx("LAS-99 Quasar Cannon"), idx("LIFT-182 Warp Pack"), idx("M-102 Gunner FRV"));
+
+        // the game's own count badges, as read from the screenshot fixtures
+        let mut badges = |fixture: &str| -> HashMap<usize, Badge> {
+            let col = Img::load_png(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(fixture)).expect("fixture");
+            let (x0, y0, _, _) = column_box(2560, 1440, 1.0);
+            m.reset();
+            m.read_rows(&col, 1440, (x0, y0), 1.0).into_iter().filter_map(|r| r.badge.map(|b| (r.index, b))).collect()
+        };
+        let (open, activating) = (badges("menu_open.png"), badges("menu_activating.png"));
+        let laser_uses = |left: u8| if left == 3 { activating.get(&laser).cloned() } else { open.get(&laser).cloned() };
+
+        let keys = ["scan", "clear", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"];
+        let mut p = Plugin {
+            keys: HashMap::new(),
+            loadout: vec![],
+            catalog,
+            icons: HashMap::new(),
+            frame: 0,
+            state: GameState::Missing,
+            standby: true,
+        };
+        p.register(SCAN, "scan", &json!({}));
+        p.register(CLEAR, "clear", &json!({}));
+        for k in 1..=8 {
+            p.register(SLOT, &format!("s{k}"), &json!({ "slot": k }));
+        }
+        let mut frames: Vec<Value> = Vec::new();
+        let mut shoot = |p: &mut Plugin, pressed: Option<usize>| {
+            p.frame += 1;
+            let images: Vec<String> = keys.iter().map(|k| image_of(&p.paint(k)[0]).to_string()).collect();
+            frames.push(json!({ "keys": images, "pressed": pressed }));
+        };
+
+        // the game is closed: a start button, grey keys; then the start button is pressed
+        for i in 0..8 {
+            shoot(&mut p, (i == 7).then_some(0));
+        }
+        // the game runs, on the ship: yellow radar, the slots wait for a loadout
+        (p.standby, p.state) = (false, GameState::Lobby);
+        for _ in 0..12 {
+            shoot(&mut p, None);
+        }
+        // a mission starts: green radar; the menu is read once and the keys fill
+        p.state = GameState::Mission;
+        for _ in 0..4 {
+            shoot(&mut p, None);
+        }
+        let ready = |index: usize, badge: Option<Badge>| Some(sv(index, Status::Ready, 0.0, badge));
+        let mut loadout = vec![
+            ready(reinforce, open.get(&reinforce).cloned()),
+            ready(sos, open.get(&sos).cloned()),
+            ready(resupply, None),
+            ready(laser, laser_uses(3)),
+            ready(quasar, None),
+            ready(warp, None),
+            ready(frv, None),
+        ];
+        p.loadout = loadout.clone();
+        for _ in 0..8 {
+            shoot(&mut p, None);
+        }
+        // the Orbital Laser, then the Warp Pack, are called in: on their way (fill from the top), then cooling
+        // down (fill from the bottom, sped up here), then ready again
+        let flight = |t: i32, start: i32, flying: i32, cooling: i32| -> Option<(Status, f32)> {
+            let t = t - start;
+            if t < 0 {
+                None
+            } else if t < flying {
+                Some((Status::Active, (t + 1) as f32 / (flying + 1) as f32))
+            } else if t < flying + cooling {
+                Some((Status::Cooldown, 1.0 - (t - flying) as f32 / cooling as f32))
+            } else {
+                None
+            }
+        };
+        for t in 0..46 {
+            let (l, w) = (flight(t, 0, 8, 24), flight(t, 6, 6, 30));
+            let badge = laser_uses(if t >= 8 { 2 } else { 3 });
+            loadout[3] = Some(l.map_or(sv(laser, Status::Ready, 0.0, badge.clone()), |(s, f)| sv(laser, s, f, badge.clone())));
+            loadout[5] = Some(w.map_or(sv(warp, Status::Ready, 0.0, None), |(s, f)| sv(warp, s, f, None)));
+            p.loadout = loadout.clone();
+            shoot(
+                &mut p,
+                match t {
+                    0 => Some(5),
+                    6 => Some(7),
+                    _ => None,
+                },
+            );
+        }
+        for _ in 0..8 {
+            shoot(&mut p, None);
+        }
+
+        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/demo");
+        std::fs::create_dir_all(&out).expect("target/demo");
+        let file = out.join("frames.json");
+        std::fs::write(&file, serde_json::to_vec(&json!({ "columns": 5, "frame_ms": ANIM.as_millis() as u64, "frames": frames })).unwrap())
+            .expect("write frames");
+        println!("{} frames written to {}", frames.len(), file.display());
+    }
+}

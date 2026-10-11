@@ -1,0 +1,692 @@
+[
+  {
+    "name": "Orbital Precision Strike",
+    "code": "RRU",
+    "cooldown": "80s",
+    "icon": "Orbital_Precision_Strike_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Orbital Gatling Barrage",
+    "code": "RDLUU",
+    "cooldown": "70s",
+    "icon": "Orbital_Gatling_Barrage_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Orbital Gas Strike",
+    "code": "RRDR",
+    "cooldown": "75s",
+    "icon": "Orbital_Gas_Strike_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Orbital 120mm HE Barrage",
+    "code": "RRDLRD",
+    "cooldown": "180s",
+    "icon": "Orbital_120mm_HE_Barrage_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Orbital Airburst Strike",
+    "code": "RRR",
+    "cooldown": "100s",
+    "icon": "Orbital_Airburst_Strike_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Orbital Smoke Strike",
+    "code": "RRDU",
+    "cooldown": "75s",
+    "icon": "Orbital_Smoke_Strike_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Orbital EMS Strike",
+    "code": "RRLD",
+    "cooldown": "75s",
+    "icon": "Orbital_EMS_Strike_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Orbital 380mm HE Barrage",
+    "code": "RDUULDD",
+    "cooldown": "240s",
+    "icon": "Orbital_380mm_HE_Barrage_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Orbital Walking Barrage",
+    "code": "RDRDRD",
+    "cooldown": "240s",
+    "icon": "Orbital_Walking_Barrage_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Orbital Laser",
+    "code": "RDURD",
+    "cooldown": "300s",
+    "icon": "Orbital_Laser_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Orbital Napalm Barrage",
+    "code": "RRDLRU",
+    "cooldown": "240s",
+    "icon": "Orbital_Napalm_Barrage_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Orbital Railcannon Strike",
+    "code": "RUDDR",
+    "cooldown": "180s",
+    "icon": "Orbital_Railcannon_Strike_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Eagle Gas Airstrike",
+    "code": "URLR",
+    "cooldown": "15s",
+    "icon": "Eagle_Gas_Airstrike_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Eagle Strafing Run",
+    "code": "URR",
+    "cooldown": "15s",
+    "icon": "Eagle_Strafing_Run_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Eagle Airstrike",
+    "code": "URDR",
+    "cooldown": "15s",
+    "icon": "Eagle_Airstrike_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Eagle Cluster Bomb",
+    "code": "URDDR",
+    "cooldown": "15s",
+    "icon": "Eagle_Cluster_Bomb_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Eagle Smoke Strike",
+    "code": "URUD",
+    "cooldown": "15s",
+    "icon": "Eagle_Smoke_Strike_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Eagle Napalm Airstrike",
+    "code": "URDU",
+    "cooldown": "15s",
+    "icon": "Eagle_Napalm_Airstrike_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Eagle 110mm Rocket Pods",
+    "code": "URUL",
+    "cooldown": "15s",
+    "icon": "Eagle_110mm_Rocket_Pods_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Eagle 500kg Bomb",
+    "code": "URDDD",
+    "cooldown": "15s",
+    "icon": "Eagle_500kg_Bomb_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "MG-43 Machine Gun",
+    "code": "DLDUR",
+    "cooldown": "480s",
+    "icon": "Machine_Gun_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "EAT-17 Expendable Anti-Tank",
+    "code": "DDLUR",
+    "cooldown": "70s",
+    "icon": "Expendable_Anti-Tank_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "M-105 Stalwart",
+    "code": "DLDUUL",
+    "cooldown": "480s",
+    "icon": "Stalwart_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "LAS-98 Laser Cannon",
+    "code": "DLDUL",
+    "cooldown": "480s",
+    "icon": "Laser_Cannon_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "APW-1 Anti-Materiel Rifle",
+    "code": "DLRUD",
+    "cooldown": "480s",
+    "icon": "Anti-Materiel_Rifle_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "GR-8 Recoilless Rifle",
+    "code": "DLRRL",
+    "cooldown": "480s",
+    "icon": "Recoilless_Rifle_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "GL-21 Grenade Launcher",
+    "code": "DLULD",
+    "cooldown": "480s",
+    "icon": "Grenade_Launcher_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "FLAM-40 Flamethrower",
+    "code": "DLUDU",
+    "cooldown": "480s",
+    "icon": "Flamethrower_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "MG-206 Heavy Machine Gun",
+    "code": "DLUDD",
+    "cooldown": "480s",
+    "icon": "Heavy_Machine_Gun_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "AC-8 Autocannon",
+    "code": "DLDUUR",
+    "cooldown": "480s",
+    "icon": "Autocannon_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "ARC-3 Arc Thrower",
+    "code": "DRDULL",
+    "cooldown": "480s",
+    "icon": "Arc_Thrower_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "LAS-99 Quasar Cannon",
+    "code": "DDULR",
+    "cooldown": "480s",
+    "icon": "Quasar_Cannon_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "RL-77 Airburst Rocket Launcher",
+    "code": "DUULR",
+    "cooldown": "480s",
+    "icon": "Airburst_Rocket_Launcher_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "MLS-4X Commando",
+    "code": "DLUDR",
+    "cooldown": "120s",
+    "icon": "Commando_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "FAF-14 Spear",
+    "code": "DDUDD",
+    "cooldown": "480s",
+    "icon": "Spear_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "RS-422 Railgun",
+    "code": "DRDULR",
+    "cooldown": "480s",
+    "icon": "Railgun_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "StA-X3 W.A.S.P. Launcher",
+    "code": "DDUDR",
+    "cooldown": "480s",
+    "icon": "W.A.S.P._Launcher_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "CQC-20 Breaching Hammer",
+    "code": "DLRLU",
+    "cooldown": "480s",
+    "icon": "Breaching_Hammer_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "PLAS-45 Epoch",
+    "code": "DLULR",
+    "cooldown": "480s",
+    "icon": "Epoch_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "MGX-42 Bullet Storm",
+    "code": "DLDRUL",
+    "cooldown": "70s",
+    "icon": "Bullet_Storm_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "S-11 Speargun",
+    "code": "DRDLUR",
+    "cooldown": "480s",
+    "icon": "Speargun_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "CQC-9 Defoliation Tool",
+    "code": "DLRRD",
+    "cooldown": "480s",
+    "icon": "Defoliation_Tool_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "GL-52 De-Escalator",
+    "code": "DRULR",
+    "cooldown": "480s",
+    "icon": "De-Escalator_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "EAT-700 Expendable Napalm",
+    "code": "DDLUL",
+    "cooldown": "140s",
+    "icon": "Expendable_Napalm_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "TX-41 Sterilizer",
+    "code": "DLUDL",
+    "cooldown": "480s",
+    "icon": "Sterilizer_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "EAT-411 Leveller",
+    "code": "DDLUD",
+    "cooldown": "140s",
+    "icon": "Leveller_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "GL-28 Belt-Fed Grenade Launcher",
+    "code": "DLULUU",
+    "cooldown": "480s",
+    "icon": "Belt-Fed_Grenade_Launcher_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "B/MD C4 Pack",
+    "code": "DRUURU",
+    "cooldown": "480s",
+    "icon": "C4_Pack_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "MS-11 Solo Silo",
+    "code": "DURDD",
+    "cooldown": "180s",
+    "icon": "Solo_Silo_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "B/FLAM-80 Cremator",
+    "code": "DDRDUU",
+    "cooldown": "480s",
+    "icon": "Cremator_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "M-1000 Maxigun",
+    "code": "DLRDUU",
+    "cooldown": "480s",
+    "icon": "Maxigun_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "CQC-1 One True Flag",
+    "code": "DLRRU",
+    "cooldown": "480s",
+    "icon": "One_True_Flag_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "40-K Meltagun",
+    "code": "DLULLD",
+    "cooldown": "480s",
+    "icon": "Meltagun_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "B-1 Supply Pack",
+    "code": "DLDUUD",
+    "cooldown": "480s",
+    "icon": "Supply_Pack_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "LIFT-850 Jump Pack",
+    "code": "DUUDU",
+    "cooldown": "480s",
+    "icon": "Jump_Pack_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "SH-20 Ballistic Shield Backpack",
+    "code": "DLDDUL",
+    "cooldown": "240s",
+    "icon": "Ballistic_Shield_Backpack_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "AX/AR-23 Guard Dog",
+    "code": "DULURD",
+    "cooldown": "480s",
+    "icon": "Guard_Dog_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "AX/LAS-5 Rover",
+    "code": "DULURR",
+    "cooldown": "480s",
+    "icon": "Rover_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "SH-32 Shield Generator Pack",
+    "code": "DULRLR",
+    "cooldown": "480s",
+    "icon": "Shield_Generator_Pack_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "SH-51 Directional Shield",
+    "code": "DULRUU",
+    "cooldown": "300s",
+    "icon": "Directional_Shield_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "AX/FLAM-75 Hot Dog",
+    "code": "DULULL",
+    "cooldown": "480s",
+    "icon": "Hot_Dog_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "B-100 Portable Hellbomb",
+    "code": "DRUUU",
+    "cooldown": "300s",
+    "icon": "Portable_Hellbomb_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "AX/ARC-3 K-9",
+    "code": "DULURL",
+    "cooldown": "480s",
+    "icon": "K-9_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "LIFT-860 Hover Pack",
+    "code": "DUUDLR",
+    "cooldown": "480s",
+    "icon": "Hover_Pack_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "AX/TX-13 Dog Breath",
+    "code": "DULURU",
+    "cooldown": "480s",
+    "icon": "Dog_Breath_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "LIFT-182 Warp Pack",
+    "code": "DLRDLR",
+    "cooldown": "480s",
+    "icon": "Warp_Pack_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "M-103 Supply FRV",
+    "code": "LDLLDUR",
+    "cooldown": "480s",
+    "icon": "Supply_FRV_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "TD-110 Maelstrom",
+    "code": "LDRDLDULR",
+    "cooldown": "780s",
+    "icon": "Maelstrom_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "M-104 Incinerator FRV",
+    "code": "LDRLDUU",
+    "cooldown": "480s",
+    "icon": "Incinerator_FRV_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "EXO-49 Emancipator Exosuit",
+    "code": "LDRULDU",
+    "cooldown": "420s",
+    "icon": "Emancipator_Exosuit_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "EXO-45 Patriot Exosuit",
+    "code": "LDRULDD",
+    "cooldown": "420s",
+    "icon": "Patriot_Exosuit_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "M-102 Gunner FRV",
+    "code": "LDRDRDU",
+    "cooldown": "480s",
+    "icon": "Fast_Recon_Vehicle_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "TD-220 Bastion MK XVI",
+    "code": "LDRDLDUDU",
+    "cooldown": "780s",
+    "icon": "Bastion_MK_XVI_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "EXO-55 Breakthrough Exosuit",
+    "code": "LDRLRDU",
+    "cooldown": "420s",
+    "icon": "Breakthrough_Exosuit_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "EXO-51 Lumberer Exosuit",
+    "code": "LDRURLU",
+    "cooldown": "420s",
+    "icon": "Lumberer_Exosuit_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "A/MG-43 Machine Gun Sentry",
+    "code": "DURRU",
+    "cooldown": "90s",
+    "icon": "Machine_Gun_Sentry_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "A/G-16 Gatling Sentry",
+    "code": "DURL",
+    "cooldown": "150s",
+    "icon": "Gatling_Sentry_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "A/AC-8 Autocannon Sentry",
+    "code": "DURULU",
+    "cooldown": "150s",
+    "icon": "Autocannon_Sentry_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "A/M-12 Mortar Sentry",
+    "code": "DURRD",
+    "cooldown": "180s",
+    "icon": "Mortar_Sentry_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "A/MLS-4X Rocket Sentry",
+    "code": "DURRL",
+    "cooldown": "150s",
+    "icon": "Rocket_Sentry_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "A/ARC-3 Tesla Tower",
+    "code": "DURULR",
+    "cooldown": "120s",
+    "icon": "Tesla_Tower_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "A/M-23 EMS Mortar Sentry",
+    "code": "DURDR",
+    "cooldown": "180s",
+    "icon": "EMS_Mortar_Sentry_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "A/LAS-98 Laser Sentry",
+    "code": "DURDUR",
+    "cooldown": "150s",
+    "icon": "Laser_Sentry_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "A/FLAM-40 Flame Sentry",
+    "code": "DURDUU",
+    "cooldown": "100s",
+    "icon": "Flame_Sentry_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "A/GM-17 Gas Mortar Sentry",
+    "code": "DURDL",
+    "cooldown": "180s",
+    "icon": "Gas_Mortar_Sentry_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "MD-6 Anti-Personnel Minefield",
+    "code": "DLUR",
+    "cooldown": "120s",
+    "icon": "Anti-Personnel_Minefield_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "MD-I4 Incendiary Mines",
+    "code": "DLLD",
+    "cooldown": "120s",
+    "icon": "Incendiary_Mines_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "MD-17 Anti-Tank Mines",
+    "code": "DLUU",
+    "cooldown": "120s",
+    "icon": "Anti-Tank_Mines_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "FX-12 Shield Generator Relay",
+    "code": "DDLRLR",
+    "cooldown": "90s",
+    "icon": "Shield_Generator_Relay_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "E/MG-101 HMG Emplacement",
+    "code": "DULRRL",
+    "cooldown": "180s",
+    "icon": "HMG_Emplacement_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "E/GL-21 Grenadier Battlement",
+    "code": "DRDLR",
+    "cooldown": "120s",
+    "icon": "Grenadier_Battlement_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "MD-8 Gas Mines",
+    "code": "DLLR",
+    "cooldown": "120s",
+    "icon": "Gas_Mines_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "E/AT-12 Anti-Tank Emplacement",
+    "code": "DULRRR",
+    "cooldown": "180s",
+    "icon": "Anti-Tank_Emplacement_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Eagle Rearm",
+    "code": "UULUR",
+    "cooldown": "0s",
+    "icon": "Eagle_Rearm_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Call In Super Destroyer",
+    "code": "UUDDLRLR",
+    "cooldown": "N/A",
+    "icon": "Call_In_Super_Destroyer_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "SoS Beacon",
+    "code": "UDRU",
+    "cooldown": "0s",
+    "icon": "SOS_Beacon_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Reinforce",
+    "code": "UDRLU",
+    "cooldown": "0s",
+    "icon": "Reinforce_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Resupply",
+    "code": "DDUR",
+    "cooldown": "180s",
+    "icon": "Resupply_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "SSSD Delivery",
+    "code": "DDDUU",
+    "cooldown": "8s",
+    "icon": "Upload_Data_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "SEAF Artillery",
+    "code": "RUUD",
+    "cooldown": "14s",
+    "icon": "SEAF_Artillery_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Hive Breaker Drill",
+    "code": "LUDRDD",
+    "cooldown": "119s",
+    "icon": "Drill_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Portable Comms Relay",
+    "code": "UUDDLLD",
+    "cooldown": "N/A",
+    "icon": "Cargo_Container_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Tactical Video Camera",
+    "code": "RDDULLU",
+    "cooldown": "N/A",
+    "icon": "Tactical_Video_Camera_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Upload Data",
+    "code": "LRUUU",
+    "cooldown": "N/A",
+    "icon": "Upload_Data_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Seismic Probe",
+    "code": "UULRDD",
+    "cooldown": "N/A",
+    "icon": "Seismic_Probe_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Super Earth Flag",
+    "code": "DUDU",
+    "cooldown": "N/A",
+    "icon": "Super_Earth_Flag_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Cargo Container",
+    "code": "UUDDRD",
+    "cooldown": "0s",
+    "icon": "Cargo_Container_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Dark Fluid Vessel",
+    "code": "ULRDUU",
+    "cooldown": "30s",
+    "icon": "Dark_Fluid_Vessel_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Activate E-711 Extraction Drill",
+    "code": "DDLLDD",
+    "cooldown": "0s",
+    "icon": "Drill_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Prospecting Drill",
+    "code": "DDLRDD",
+    "cooldown": "0s",
+    "icon": "Drill_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Aquifer Drill",
+    "code": "LLLUDRDD",
+    "cooldown": "0s",
+    "icon": "Drill_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Reinforcement Pods",
+    "code": "LRUUU",
+    "cooldown": "N/A",
+    "icon": "Upload_Data_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Tectonic Drill",
+    "code": "UDUDUD",
+    "cooldown": "0s",
+    "icon": "Drill_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "NUX-223 Hellbomb",
+    "code": "DULDURDU",
+    "cooldown": "30s",
+    "icon": "Hellbomb_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "Orbital Illumination Flare",
+    "code": "RRLL",
+    "cooldown": "N/A",
+    "icon": "Orbital_Illumination_Flare_Stratagem_Icon_Background.svg"
+  }
+]

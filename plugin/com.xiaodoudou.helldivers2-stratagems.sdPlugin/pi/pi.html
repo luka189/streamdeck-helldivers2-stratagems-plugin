@@ -1,0 +1,170 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Helldivers 2 Stratagems</title>
+<style>
+  body { margin:0; padding:6px 10px 14px; background:#2d2d2d; color:#d8d8d8; font:13px system-ui, sans-serif; }
+  h3 { margin:14px 0 4px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:#999; font-weight:600; }
+  .row { display:grid; grid-template-columns:120px 1fr auto; gap:8px; align-items:center; margin:4px 0; }
+  input, select { background:#3b3b3b; color:#d8d8d8; border:1px solid #555; border-radius:4px; padding:4px 8px; font:inherit; width:100%; box-sizing:border-box; }
+  input.key { cursor:pointer; text-align:center; font-weight:600; }
+  input.key.listening { border-color:#ffe710; }
+  button { background:#ffe710; color:#111; border:0; border-radius:4px; padding:6px 14px; font:inherit; font-weight:600; cursor:pointer; }
+  .hint { color:#999; font-size:11px; margin:4px 0; }
+  #msg { margin-left:8px; color:#999; }
+  #msg.err { color:#ff6b5e; }
+</style>
+</head>
+<body>
+<div id="slotBlock" style="display:none">
+  <div class="row"><label for="slot">Slot</label><select id="slot"></select></div>
+  <div class="row"><label for="show_name">Show name</label><input id="show_name" type="checkbox" style="width:auto"></div>
+  <div class="hint">Nth stratagem read from the game, in order of appearance. Scan period, keys and timings are shared by all keys: set them on the Scan Now key.</div>
+</div>
+
+<div id="globalBlock" style="display:none">
+<h3>Scanning</h3>
+<div class="row"><label for="auto_scan">Auto scan</label><select id="auto_scan"><option value="true">On</option><option value="false">Off (Scan Now key only)</option></select></div>
+<div class="row"><label for="auto_menu_scan">Open the menu once at mission start</label><select id="auto_menu_scan"><option value="true">On</option><option value="false">Off</option></select></div>
+<div class="row"><label for="scan_period">Scan period (s)</label><input id="scan_period" type="number" min="0.1" max="60" step="0.05"></div>
+<div class="row"><label for="confirm_scans">Confirm after</label><input id="confirm_scans" type="number" min="1" max="10" step="1"></div>
+<div class="row"><label for="icon_scale">Icon scale</label><input id="icon_scale" type="number" min="0.5" max="2" step="0.05"></div>
+<div class="row"><label for="resolution">Game resolution</label><input id="resolution" list="resolutions" placeholder="auto"></div>
+<datalist id="resolutions"><option value="auto"><option value="1280x720"><option value="1600x900"><option value="1920x1080"><option value="2560x1440"><option value="3440x1440"><option value="3840x2160"></datalist>
+<div class="hint" id="detected"></div>
+<div class="hint">Confirm after: scans in a row a stratagem must be seen before it is added. Icon scale: only for a non-default HUD scale. Game resolution: auto measures the game window; type a size (2560x1440) only if the size found is wrong.</div>
+
+<h3>Inputs (click, then press a key or mouse button)</h3>
+<div class="row"><label>Stratagem menu</label><input class="key" id="menu_key" readonly></div>
+<div class="row"><label for="menu_mode">Menu mode</label><select id="menu_mode"><option value="hold">Hold while entering</option><option value="toggle">Tap to toggle</option></select></div>
+<div class="row"><label>Up</label><input class="key" id="up" readonly></div>
+<div class="row"><label>Down</label><input class="key" id="down" readonly></div>
+<div class="row"><label>Left</label><input class="key" id="left" readonly></div>
+<div class="row"><label>Right</label><input class="key" id="right" readonly></div>
+<div class="row"><label>Throw (optional)</label><input class="key" id="throw_key" readonly placeholder="none"></div>
+<div class="hint">Backspace clears the throw key while capturing.</div>
+
+<h3>Timing (ms)</h3>
+<div class="row"><label for="menu_open_delay_ms">Menu open delay</label><input id="menu_open_delay_ms" type="number" min="0" max="2000" step="10"></div>
+<div class="row"><label for="scan_open_wait_ms">Scan menu wait</label><input id="scan_open_wait_ms" type="number" min="0" max="3000" step="50"></div>
+<div class="row"><label for="key_hold_ms">Key hold</label><input id="key_hold_ms" type="number" min="5" max="500" step="5"></div>
+<div class="row"><label for="key_delay_ms">Delay between keys</label><input id="key_delay_ms" type="number" min="0" max="500" step="5"></div>
+
+<p><button id="save">Save</button><span id="msg"></span></p>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const KEYS = ['menu_key', 'up', 'down', 'left', 'right', 'throw_key'];
+const NUMS = ['scan_period', 'confirm_scans', 'icon_scale', 'menu_open_delay_ms', 'scan_open_wait_ms', 'key_hold_ms', 'key_delay_ms'];
+// mirrors engine::Config::default in the plugin
+const DEFAULTS = { auto_scan: true, auto_menu_scan: true, scan_period: 0.15, confirm_scans: 2, icon_scale: 1, resolution: 'auto', menu_key: 'lctrl', menu_mode: 'hold',
+  up: 'w', down: 's', left: 'a', right: 'd', throw_key: '', menu_open_delay_ms: 120, scan_open_wait_ms: 350, key_hold_ms: 35, key_delay_ms: 40 };
+let global = {};
+const MOUSE = { 0: 'mouse1', 1: 'mouse3', 2: 'mouse2', 3: 'mouse4', 4: 'mouse5' };
+const SPECIAL = { ControlLeft: 'lctrl', ControlRight: 'rctrl', ShiftLeft: 'lshift', ShiftRight: 'rshift', AltLeft: 'lalt', AltRight: 'ralt',
+  ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Space: 'space', Tab: 'tab', Enter: 'enter', CapsLock: 'capslock', Escape: 'escape' };
+
+let ws, ctx, settings = {}, listening = null;
+const sel = $('slot');
+for (let i = 1; i <= 12; i++) sel.add(new Option(String(i), String(i)));
+
+function keyName(e) {
+  if (SPECIAL[e.code]) return SPECIAL[e.code];
+  if (/^Key[A-Z]$/.test(e.code)) return e.code.slice(3).toLowerCase();
+  if (/^Digit[0-9]$/.test(e.code)) return e.code.slice(5);
+  if (/^F([1-9]|1[0-2])$/.test(e.code)) return e.code.toLowerCase();
+  return null;
+}
+const PICK = [['', 'pick...'], ['up', 'Arrow Up'], ['down', 'Arrow Down'], ['left', 'Arrow Left'], ['right', 'Arrow Right'],
+  ['lctrl', 'Left Ctrl'], ['rctrl', 'Right Ctrl'], ['lshift', 'Left Shift'], ['lalt', 'Left Alt'], ['space', 'Space'], ['tab', 'Tab'],
+  ['capslock', 'Caps Lock'], ['mouse3', 'Middle mouse'], ['mouse4', 'Mouse 4'], ['mouse5', 'Mouse 5']];
+for (const id of KEYS) {
+  const p = document.createElement('select');
+  for (const [v, t] of PICK) p.add(new Option(t, v));
+  p.style.width = '110px';
+  p.onchange = () => { if (p.value) $(id).value = p.value; p.value = ''; };
+  $(id).parentNode.appendChild(p);
+}
+function stopListening() { if (listening) { listening.classList.remove('listening'); listening = null; } }
+
+for (const id of KEYS) {
+  const el = $(id);
+  el.addEventListener('click', () => { stopListening(); listening = el; el.classList.add('listening'); el.value = 'press a key...'; });
+  el.addEventListener('keydown', e => {
+    e.preventDefault();
+    if (e.code === 'Backspace' && id === 'throw_key') { el.value = ''; stopListening(); return; }
+    const n = keyName(e);
+    if (n) { el.value = n; stopListening(); }
+  });
+  el.addEventListener('mousedown', e => { if (listening === el) { e.preventDefault(); el.value = MOUSE[e.button] || ''; stopListening(); } });
+  el.addEventListener('contextmenu', e => { if (listening === el) e.preventDefault(); });
+  el.addEventListener('blur', () => { if (listening === el) { stopListening(); showConfig(); } });
+}
+
+function showConfig() {
+  const c = { ...DEFAULTS, ...global };
+  for (const id of KEYS) $(id).value = c[id];
+  for (const id of NUMS) $(id).value = c[id];
+  $('resolution').value = c.resolution;
+  $('auto_scan').value = String(c.auto_scan);
+  $('auto_menu_scan').value = String(c.auto_menu_scan);
+  $('menu_mode').value = c.menu_mode;
+}
+
+$('save').onclick = () => {
+  const body = { auto_scan: $('auto_scan').value === 'true', auto_menu_scan: $('auto_menu_scan').value === 'true', menu_mode: $('menu_mode').value };
+  for (const id of KEYS) body[id] = $(id).value;
+  for (const id of NUMS) body[id] = Number($(id).value);
+  // "2560 x 1440", "2560×1440" and an empty box all become what the plugin expects
+  const res = $('resolution').value.trim().toLowerCase().replace(/\s+/g, '').replace('×', 'x');
+  body.resolution = /^\d{3,5}x\d{3,5}$/.test(res) ? res : 'auto';
+  global = body;
+  ws.send(JSON.stringify({ event: 'setGlobalSettings', context: ctx, payload: body }));
+  $('msg').className = '';
+  $('msg').textContent = 'Saved';
+};
+
+function saveSlot() {
+  settings.slot = Number(sel.value);
+  settings.show_name = $('show_name').checked;
+  ws.send(JSON.stringify({ event: 'setSettings', context: ctx, payload: settings }));
+}
+sel.onchange = saveSlot;
+$('show_name').onchange = saveSlot;
+
+function connectElgatoStreamDeckSocket(port, uuid, registerEvent, info, actionInfo) {
+  ctx = uuid;
+  const a = JSON.parse(actionInfo);
+  settings = a.payload.settings || {};
+  if (a.action === 'com.xiaodoudou.helldivers2-stratagems.slot') {
+    $('slotBlock').style.display = 'block';
+    sel.value = String(settings.slot || 1);
+    $('show_name').checked = !!settings.show_name;
+  } else {
+    $('globalBlock').style.display = 'block';
+  }
+  ws = new WebSocket('ws://127.0.0.1:' + port);
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ event: registerEvent, uuid }));
+    ws.send(JSON.stringify({ event: 'getGlobalSettings', context: uuid }));
+  };
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    if (m.event === 'didReceiveSettings') {
+      settings = m.payload.settings || {};
+      sel.value = String(settings.slot || 1);
+      $('show_name').checked = !!settings.show_name;
+    } else if (m.event === 'didReceiveGlobalSettings') {
+      global = m.payload.settings || {};
+      showConfig();
+    } else if (m.event === 'sendToPropertyInspector' && m.payload && 'detected' in m.payload) {
+      $('detected').textContent = m.payload.detected ? 'Game size found: ' + m.payload.detected : 'The game is not running, so its size is not known yet.';
+    }
+  };
+  showConfig();
+}
+</script>
+</body>
+</html>
