@@ -622,6 +622,45 @@ fn scan_thread(engine: Arc<Mutex<Engine>>, cfg: Arc<Mutex<Config>>, tx: mpsc::Un
     }
 }
 
+/// A development aid for demo videos: with a file named `record-keys` beside the exe, every image and title sent to a
+/// key, and every key press, goes to `keys-record.jsonl` there, one JSON object a line with the time (Unix
+/// milliseconds) and the key's place, so that a screen recording of the game can be shown with the keys as they were.
+struct KeyRecord {
+    file: Option<std::fs::File>,
+    places: HashMap<String, (u8, u8)>, // context -> (column, row)
+}
+
+impl KeyRecord {
+    fn open(dir: &std::path::Path) -> KeyRecord {
+        let file = dir.join("record-keys").exists().then(|| std::fs::File::create(dir.join("keys-record.jsonl")).ok()).flatten();
+        if file.is_some() {
+            log("recording the keys to keys-record.jsonl");
+        }
+        KeyRecord { file, places: HashMap::new() }
+    }
+
+    fn place(&mut self, context: &str, at: Option<&streamdeck_rs::Coordinates>) {
+        if let Some(c) = at {
+            self.places.insert(context.into(), (c.column, c.row));
+        }
+    }
+
+    fn write(&mut self, what: &str, context: &str, value: &str) {
+        let Some(f) = self.file.as_mut() else { return };
+        let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64() * 1000.0);
+        let at = self.places.get(context).copied();
+        let _ = writeln!(f, "{}", json!({ "t": ms, "what": what, "key": at, "value": value }));
+    }
+
+    fn sent(&mut self, m: &Out) {
+        match m {
+            MessageOut::SetImage { context, payload } => self.write("image", context, payload.image.as_deref().unwrap_or("")),
+            MessageOut::SetTitle { context, payload } => self.write("title", context, payload.title.as_deref().unwrap_or("")),
+            _ => {}
+        }
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     set_dpi_aware();
@@ -673,6 +712,7 @@ async fn main() {
     }
 
     let _ = sink.send(MessageOut::GetGlobalSettings { context: uuid.clone() }).await;
+    let mut record = KeyRecord::open(&dir);
     let mut p = Plugin {
         keys: HashMap::new(),
         loadout: Vec::new(),
@@ -696,7 +736,10 @@ async fn main() {
                     continue;
                 }
                 Some(Ok(m)) => match m {
-                    Message::WillAppear { action, context, payload, .. } => p.register(&action, &context, &payload.settings),
+                    Message::WillAppear { action, context, payload, .. } => {
+                        record.place(&context, payload.coordinates.as_ref());
+                        p.register(&action, &context, &payload.settings)
+                    }
                     Message::DidReceiveSettings { action, context, payload, .. } => p.register(&action, &context, &payload.settings),
                     Message::WillDisappear { context, .. } => {
                         p.keys.remove(&context);
@@ -715,6 +758,7 @@ async fn main() {
                         vec![MessageOut::SendToPropertyInspector { action, context, payload: json!({ "detected": detected }) }]
                     }
                     Message::KeyDown { action, context, .. } => {
+                        record.write("press", &context, &action);
                         let c = cfg.lock().unwrap().clone();
                         let tx = tx.clone();
                         match action.as_str() {
@@ -845,6 +889,7 @@ async fn main() {
             }
         };
         for m in out {
+            record.sent(&m);
             if sink.send(m).await.is_err() {
                 log("send to Stream Deck failed; exiting");
                 return;

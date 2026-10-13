@@ -98,6 +98,7 @@ languages/             screenshots for new game languages, see TRANSLATIONS.md
 | `make_language_examples.py` | The annotated examples of [TRANSLATIONS.md](TRANSLATIONS.md) |
 | `make_demo_gif.py` | `docs/img/demo.gif`, the animation of the README (see [CONTRIBUTING.md](../CONTRIBUTING.md#tests)) |
 | `make_store_media.py` | The Elgato Marketplace media in `dist/store/`: icon, thumbnail, gallery images and video |
+| `record_demo.py` | A demo video of a real play session in `dist/recording/`: the game recorded from the screen, with the Stream Deck keys the plugin showed drawn over it |
 | `commitlint.py` | The commit message check (see [CONTRIBUTING.md](../CONTRIBUTING.md#the-check)) |
 | `unwrap_md.py` | Joins hard-wrapped Markdown paragraphs into single lines |
 
