@@ -256,13 +256,15 @@ pub fn column_box(w: usize, h: usize, icon_scale: f64) -> (usize, usize, usize, 
     (x0, (h as f64 * 0.03) as usize, x1, (h as f64 * 0.72) as usize)
 }
 
-// The player's card on the loadout screen before a mission, at 2560x1440. Its "Mission Stratagems" row lists the
-// stratagems every mission gives (Reinforce first) and the mission's own, drawn like the menu's icons; the row under
-// it the four the player chose, larger and without their frame. Together they are the stratagem menu, in its order.
-// (left of the first icon, its top, its side, the step to the next)
+// The player's card on the loadout screen before a mission, at 2560x1440. Its "Mission Stratagems" row starts with
+// the CARD_COMMON stratagems every mission gives (Reinforce, SOS Beacon, Resupply), drawn like the menu's icons; the
+// row under it holds the four the player chose, larger and without their frame. The mission's own stratagems follow
+// in the first row, but most of them (Hellbomb, SSSD Delivery) only join the menu later in the mission, and the card
+// can't tell which, so they are left for the menu read at mission start. (left of the first icon, its top, its side,
+// the step to the next)
 const CARD_MISSION: (f64, f64, f64, f64) = (80.0, 1037.0, 60.0, 81.3);
 const CARD_LOADOUT: (f64, f64, f64, f64) = (78.0, 1119.0, 98.0, 114.0);
-const CARD_MISSION_MAX: usize = 6;
+const CARD_COMMON: usize = 3;
 const CARD_LOADOUT_SLOTS: usize = 4;
 const CARD_PAD: f64 = 4.0; // the icons are searched this far around their place
 // glyph score of a stratagem on the card: icons read 0.79 or more, empty boxes and other screens 0.55 at most
@@ -273,7 +275,7 @@ pub fn card_box(w: usize, h: usize) -> (usize, usize, usize, usize) {
     let f = h as f64 / REF_HEIGHT;
     let row_end = |(x, _, side, step): (f64, f64, f64, f64), n: usize| x + step * (n - 1) as f64 + side;
     let x0 = (CARD_MISSION.0.min(CARD_LOADOUT.0) - 2.0 * CARD_PAD) * f;
-    let x1 = (row_end(CARD_MISSION, CARD_MISSION_MAX).max(row_end(CARD_LOADOUT, CARD_LOADOUT_SLOTS)) + 2.0 * CARD_PAD) * f;
+    let x1 = (row_end(CARD_MISSION, CARD_COMMON).max(row_end(CARD_LOADOUT, CARD_LOADOUT_SLOTS)) + 2.0 * CARD_PAD) * f;
     let y0 = (CARD_MISSION.1 - 2.0 * CARD_PAD) * f;
     let y1 = (CARD_LOADOUT.1 + CARD_LOADOUT.2 + 2.0 * CARD_PAD) * f;
     (x0.round().max(0.0) as usize, y0.round() as usize, (x1.round() as usize).min(w), (y1.round() as usize).min(h))
@@ -455,10 +457,11 @@ impl Matcher {
         out
     }
 
-    /// The stratagems on the player's card of the loadout screen, in the order of the stratagem menu (empty boxes
-    /// left out), with whether each reading is sure; None when the card is not on screen, which its first icon
-    /// tells: the mission row always starts with Reinforce. `img` is the capture of `card_box`, `origin` its top-left
-    /// in the game frame.
+    /// The stratagems on the player's card of the loadout screen that the stratagem menu will start the mission with,
+    /// in its order: the three every mission gives, then the player's four (empty boxes left out; the mission's own
+    /// are not read, see CARD_COMMON), with whether each reading is sure. None when the card is not on screen, which
+    /// its first icon tells: the mission row always starts with Reinforce. `img` is the capture of `card_box`,
+    /// `origin` its top-left in the game frame.
     pub fn read_card(&self, img: &Img, h: usize, origin: (usize, usize)) -> Option<Vec<(usize, bool)>> {
         let f = h as f64 / REF_HEIGHT;
         let at = |(x, y, side, step): (f64, f64, f64, f64), k: usize| {
@@ -472,7 +475,7 @@ impl Matcher {
         if self.catalog[first].name != "Reinforce" || !sure {
             return None;
         }
-        let mission = (1..CARD_MISSION_MAX).map_while(|k| at(CARD_MISSION, k));
+        let mission = (1..CARD_COMMON).map_while(|k| at(CARD_MISSION, k));
         let loadout = (0..CARD_LOADOUT_SLOTS).filter_map(|k| at(CARD_LOADOUT, k));
         Some(std::iter::once((first, sure)).chain(mission).chain(loadout).collect())
     }
