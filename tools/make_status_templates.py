@@ -1,6 +1,6 @@
 """Cut greyscale status templates (state words, arrow glyphs and timer digits) from reference frames at 2560x1440.
 
-    python tools/make_status_templates.py menu_open.png menu_unavailable.png menu_activating.png capture_2560x1440_082327.png
+    python tools/make_status_templates.py menu_open.png menu_unavailable.png menu_activating.png capture_2560x1440_082327.png super_destroyer_unavailable.png
 
 The frames are the screenshots of the same names in data/samples/ (not in git).
 """
@@ -27,9 +27,10 @@ def band(im, k, x0, x1):
     return im.crop((x0, top + BAND[0], x1, top + BAND[1])).convert("L")
 
 
-def main(open_frame: str, unavailable_frame: str, activating_frame: str, timers_frame: str) -> int:
+def main(open_frame: str, unavailable_frame: str, activating_frame: str, timers_frame: str, destroyer_frame: str) -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     a, b, c, d = Image.open(open_frame), Image.open(unavailable_frame), Image.open(activating_frame), Image.open(timers_frame)
+    e = Image.open(destroyer_frame)
     arrow = lambda im, k, i: band(im, k, ARROW_X + ARROW_STEP * i, ARROW_X + ARROW_STEP * i + ARROW_W)
     digit = lambda im, k, i, shift=0: band(im, k, COOLDOWN_DIGITS[i] + shift, COOLDOWN_DIGITS[i] + shift + DIGIT_W)
     cuts = {
@@ -39,6 +40,8 @@ def main(open_frame: str, unavailable_frame: str, activating_frame: str, timers_
         "word_unavailable": band(b, 3, *WORD_X),
         "word_inbound": band(b, 5, *WORD_X),
         "word_activating": band(c, 3, *WORD_X),
+        # "Super Destroyer Unavailable": the Super Destroyer is away, its stratagems can't be called (Resupply's row)
+        "word_super_destroyer": band(e, 2, *WORD_X),
         "arrow_up": arrow(a, 1, 0),  # SoS Beacon: up down right up
         "arrow_down": arrow(a, 1, 1),
         "arrow_right": arrow(a, 1, 2),
@@ -61,4 +64,4 @@ def main(open_frame: str, unavailable_frame: str, activating_frame: str, timers_
 
 
 if __name__ == "__main__":
-    sys.exit(main(*sys.argv[1:5]))
+    sys.exit(main(*sys.argv[1:6]))

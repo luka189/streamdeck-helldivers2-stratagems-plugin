@@ -113,6 +113,9 @@ const FRAMES: &[Frame] = &[
     },
 ];
 
+/// Frames checked by a test of their own rather than through FRAMES, cropped by make_fixtures all the same.
+const EXTRA_FIXTURES: &[&str] = &["super_destroyer_unavailable"];
+
 /// The timers the status lines show, in seconds ("Cooldown T-04:50" is 290); every other row shows none.
 const TIMERS: &[(&str, usize, u32)] = &[
     ("menu_open", 4, 4 * 60 + 50),
@@ -244,12 +247,12 @@ fn assert_misread_fixed(name: &str, slot: usize, field: Field) {
 #[test]
 fn fixtures_are_the_column_box_of_a_2560x1440_frame() {
     let (x0, y0, x1, y1) = column_box(FRAME_W, FRAME_H, 1.0);
-    for f in FRAMES {
-        let path = fixture_path(f.name);
-        let img = Img::load_png(&path).expect(f.name);
-        assert_eq!((img.w, img.h), (x1 - x0, y1 - y0), "{}", f.name);
+    for name in FRAMES.iter().map(|f| f.name).chain(EXTRA_FIXTURES.iter().copied()) {
+        let path = fixture_path(name);
+        let img = Img::load_png(&path).expect(name);
+        assert_eq!((img.w, img.h), (x1 - x0, y1 - y0), "{name}");
         let bytes = std::fs::metadata(&path).unwrap().len();
-        assert!(bytes < 600_000, "{}: {bytes} bytes", f.name);
+        assert!(bytes < 600_000, "{name}: {bytes} bytes");
     }
 }
 
@@ -350,6 +353,29 @@ fn a_warm_row_cache_reads_like_a_fresh_one() {
     }
 }
 
+/// While the Super Destroyer is away, the game greys out every stratagem it delivers and their status line reads
+/// "Super Destroyer Unavailable": they are unavailable, not as they were before (the Laser Cannon stayed ready).
+#[test]
+fn super_destroyer_unavailable_reads_its_stratagems_unavailable() {
+    let mut m = Matcher::load(&Data::Dir(data_dir())).expect("catalog");
+    let col = Img::load_png(&fixture_path("super_destroyer_unavailable")).expect("fixture");
+    let rows = m.read_rows(&col, FRAME_H, origin(), 1.0);
+    let got: Vec<(&str, Status)> = rows.iter().map(|r| (m.catalog[r.index].name.as_str(), r.status)).collect();
+    assert_eq!(
+        got,
+        [
+            ("Reinforce", Ready),
+            ("SoS Beacon", Ready),
+            ("Resupply", Unavailable),
+            ("Call In Super Destroyer", Unavailable),
+            ("Orbital Laser", Unavailable),
+            ("LAS-98 Laser Cannon", Unavailable),
+            ("LIFT-182 Warp Pack", Unavailable),
+            ("M-102 Gunner FRV", Unavailable),
+        ]
+    );
+}
+
 // ---- known misreads: the visible value, failing today ----
 
 /// The status line has four arrows; past them, the panel's brown gradient correlates with the
@@ -401,7 +427,7 @@ fn save_png(img: &Img, path: &Path) {
 }
 
 /// Crops data/samples/<name>.png to the icon column into tests/fixtures/<name>.png for every frame
-/// in FRAMES, checks that the crop reads exactly like the full frame, and prints what was read.
+/// in FRAMES and EXTRA_FIXTURES, checks that the crop reads exactly like the full frame, and prints what was read.
 /// Run: cargo test --test frames -- --ignored --nocapture make_fixtures
 #[test]
 #[ignore = "generator: needs data/samples (full screenshots, not in git); rebuilds tests/fixtures"]
@@ -409,20 +435,20 @@ fn make_fixtures() {
     let mut m = Matcher::load(&Data::Dir(data_dir())).expect("catalog");
     let (x0, y0, x1, y1) = column_box(FRAME_W, FRAME_H, 1.0);
     std::fs::create_dir_all(manifest_dir().join("tests/fixtures")).expect("fixtures dir");
-    for f in FRAMES {
-        let frame = Img::load_png(&data_dir().join("samples").join(format!("{}.png", f.name))).expect(f.name);
-        assert_eq!((frame.w, frame.h), (FRAME_W, FRAME_H), "{}", f.name);
+    for name in FRAMES.iter().map(|f| f.name).chain(EXTRA_FIXTURES.iter().copied()) {
+        let frame = Img::load_png(&data_dir().join("samples").join(format!("{name}.png"))).expect(name);
+        assert_eq!((frame.w, frame.h), (FRAME_W, FRAME_H), "{}", name);
         let col = frame.crop(x0 as isize, y0 as isize, x1 - x0, y1 - y0);
-        let out = fixture_path(f.name);
+        let out = fixture_path(name);
         save_png(&col, &out);
         let back = Img::load_png(&out).expect("reload");
-        assert_eq!(back.px, col.px, "{}: fixture does not round-trip", f.name);
+        assert_eq!(back.px, col.px, "{}: fixture does not round-trip", name);
         m.reset();
         let whole = m.read_rows(&frame, FRAME_H, (0, 0), 1.0);
         m.reset();
         let cropped = m.read_rows(&back, FRAME_H, (x0, y0), 1.0);
-        assert_eq!(format!("{whole:?}"), format!("{cropped:?}"), "{}: the crop reads differently", f.name);
-        println!("{}: {} bytes", f.name, std::fs::metadata(&out).unwrap().len());
+        assert_eq!(format!("{whole:?}"), format!("{cropped:?}"), "{}: the crop reads differently", name);
+        println!("{}: {} bytes", name, std::fs::metadata(&out).unwrap().len());
         for r in &cropped {
             let code = m.slot_code(&back, FRAME_H, (x0, y0), 1.0, r.slot);
             println!(
