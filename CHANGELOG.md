@@ -4,6 +4,14 @@ What changed in each version of the plugin, newest first. The versions follow [s
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-13
+
+### Changed
+
+- **New icons.** The plugin icon and the category icon are original drawings (four stratagem arrows) instead of the game's Reinforce icon, and the icons of the actions list are pure white on transparent, as the Elgato Marketplace asks.
+- **The game's own icons, sharp on the keys.** The plugin now takes the stratagem icons from the game's files instead of the wiki's copies, some of which were out of date: the game has since added markers to the backpacks and the expendable weapons and redrawn a few icons. The keys show them at full size, sharper than the wiki's small pictures, and the screen is read against the same icons. The Tectonic Drill, which the game draws with an icon of its own, is no longer mixed up with the other drills.
+- **The settings save themselves.** The Scan key's panel has no Save button any more: each change is saved as you make it. On/off settings are checkboxes, and a value out of range is outlined in red with the reason, while the last good value stays in effect. A *How to use* link opens the guide.
+
 ## [0.3.0] - 2026-10-11
 
 ### Changed
@@ -32,6 +40,7 @@ The first version.
 - **A Clear Stratagem Slots key** that empties every slot until the next scan.
 - **Settings on the Scan key**, shared by every key: the scan period, the inputs, the timings, and the game's resolution for when its window can't be measured (the panel shows the size the plugin found).
 
-[Unreleased]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.3.0...dev
+[Unreleased]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.4.0...dev
+[0.4.0]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/releases/tag/v0.2.0

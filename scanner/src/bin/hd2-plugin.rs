@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 use hd_scanner::capture::{Source, set_dpi_aware};
 use hd_scanner::data::Data;
 use hd_scanner::engine::{self, Config, Engine, GameState, SlotView, Status};
+use hd_scanner::img::Img;
 use hd_scanner::matcher::Matcher;
 
 const SLOT: &str = "com.xiaodoudou.helldivers2-stratagems.slot";
@@ -50,12 +51,25 @@ enum Event {
 struct Stratagem {
     name: String,
     code: String,
-    png: Cow<'static, [u8]>, // its icon, as stored
+    png: Vec<u8>, // the picture its key shows: an 8-bit RGBA PNG, ICON_SIZE square
 }
 
-/// The matcher's catalog with each stratagem's icon, read from `data`.
-fn catalog(m: &Matcher, data: &Data) -> Result<Vec<Stratagem>, String> {
-    m.catalog.iter().map(|s| Ok(Stratagem { name: s.name.clone(), code: s.code.clone(), png: data.read(&s.icon_path())? })).collect()
+/// The matcher's catalog with the picture each stratagem's key shows: its icon as the game draws it, made from the
+/// game's own texture: the very icon the matcher compares the screen with.
+fn catalog(m: &Matcher) -> Vec<Stratagem> {
+    m.catalog.iter().enumerate().map(|(i, s)| Stratagem { name: s.name.clone(), code: s.code.clone(), png: png_rgba(m.icon(i)) }).collect()
+}
+
+/// An opaque 8-bit RGBA PNG of `img`.
+fn png_rgba(img: &Img) -> Vec<u8> {
+    let px: Vec<u8> =
+        img.px.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255.0].map(|v| v.round().clamp(0.0, 255.0) as u8)).collect();
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::new(&mut out, img.w as u32, img.h as u32);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header().and_then(|mut w| w.write_image_data(&px)).expect("encoding into memory");
+    out
 }
 
 static LOG: OnceLock<(Mutex<std::fs::File>, Instant)> = OnceLock::new();
@@ -608,6 +622,45 @@ fn scan_thread(engine: Arc<Mutex<Engine>>, cfg: Arc<Mutex<Config>>, tx: mpsc::Un
     }
 }
 
+/// A development aid for demo videos: with a file named `record-keys` beside the exe, every image and title sent to a
+/// key, and every key press, goes to `keys-record.jsonl` there, one JSON object a line with the time (Unix
+/// milliseconds) and the key's place, so that a screen recording of the game can be shown with the keys as they were.
+struct KeyRecord {
+    file: Option<std::fs::File>,
+    places: HashMap<String, (u8, u8)>, // context -> (column, row)
+}
+
+impl KeyRecord {
+    fn open(dir: &std::path::Path) -> KeyRecord {
+        let file = dir.join("record-keys").exists().then(|| std::fs::File::create(dir.join("keys-record.jsonl")).ok()).flatten();
+        if file.is_some() {
+            log("recording the keys to keys-record.jsonl");
+        }
+        KeyRecord { file, places: HashMap::new() }
+    }
+
+    fn place(&mut self, context: &str, at: Option<&streamdeck_rs::Coordinates>) {
+        if let Some(c) = at {
+            self.places.insert(context.into(), (c.column, c.row));
+        }
+    }
+
+    fn write(&mut self, what: &str, context: &str, value: &str) {
+        let Some(f) = self.file.as_mut() else { return };
+        let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64() * 1000.0);
+        let at = self.places.get(context).copied();
+        let _ = writeln!(f, "{}", json!({ "t": ms, "what": what, "key": at, "value": value }));
+    }
+
+    fn sent(&mut self, m: &Out) {
+        match m {
+            MessageOut::SetImage { context, payload } => self.write("image", context, payload.image.as_deref().unwrap_or("")),
+            MessageOut::SetTitle { context, payload } => self.write("title", context, payload.title.as_deref().unwrap_or("")),
+            _ => {}
+        }
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     set_dpi_aware();
@@ -647,13 +700,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let catalog = match catalog(&engine.lock().unwrap().matcher, &data) {
-        Ok(c) => c,
-        Err(e) => {
-            log(format!("cannot load the icons: {e}"));
-            std::process::exit(1);
-        }
-    };
+    let catalog = catalog(&engine.lock().unwrap().matcher);
     let names: Vec<String> = catalog.iter().map(|s| s.name.clone()).collect();
     log(format!("loaded {} stratagems", catalog.len()));
     let cfg = Arc::new(Mutex::new(Config::default()));
@@ -665,6 +712,7 @@ async fn main() {
     }
 
     let _ = sink.send(MessageOut::GetGlobalSettings { context: uuid.clone() }).await;
+    let mut record = KeyRecord::open(&dir);
     let mut p = Plugin {
         keys: HashMap::new(),
         loadout: Vec::new(),
@@ -688,7 +736,10 @@ async fn main() {
                     continue;
                 }
                 Some(Ok(m)) => match m {
-                    Message::WillAppear { action, context, payload, .. } => p.register(&action, &context, &payload.settings),
+                    Message::WillAppear { action, context, payload, .. } => {
+                        record.place(&context, payload.coordinates.as_ref());
+                        p.register(&action, &context, &payload.settings)
+                    }
                     Message::DidReceiveSettings { action, context, payload, .. } => p.register(&action, &context, &payload.settings),
                     Message::WillDisappear { context, .. } => {
                         p.keys.remove(&context);
@@ -707,6 +758,7 @@ async fn main() {
                         vec![MessageOut::SendToPropertyInspector { action, context, payload: json!({ "detected": detected }) }]
                     }
                     Message::KeyDown { action, context, .. } => {
+                        record.write("press", &context, &action);
                         let c = cfg.lock().unwrap().clone();
                         let tx = tx.clone();
                         match action.as_str() {
@@ -837,6 +889,7 @@ async fn main() {
             }
         };
         for m in out {
+            record.sent(&m);
             if sink.send(m).await.is_err() {
                 log("send to Stream Deck failed; exiting");
                 return;
@@ -853,14 +906,16 @@ mod tests {
     use super::*;
     use hd_scanner::engine::Badge;
     use hd_scanner::img::Img;
+    use hd_scanner::matcher::ICON_SIZE;
 
-    fn data() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../data")
-    }
-
-    /// Reinforce's icon, as built in.
-    fn icon() -> Cow<'static, [u8]> {
-        Data::Embedded.read("icons_144/Reinforce_Stratagem_Icon_Background.png").expect("built in")
+    /// Reinforce's key picture, as the plugin makes it.
+    fn icon() -> Vec<u8> {
+        static ICON: OnceLock<Vec<u8>> = OnceLock::new();
+        ICON.get_or_init(|| {
+            let m = Matcher::load(&Data::Embedded).expect("built in");
+            catalog(&m).into_iter().find(|s| s.name == "Reinforce").expect("Reinforce").png
+        })
+        .clone()
     }
 
     fn sv(index: usize, status: Status, fill: f32, badge: Option<Badge>) -> SlotView {
@@ -1026,21 +1081,22 @@ mod tests {
         assert_eq!(icon_png(&grey, &sv(0, Status::Cooldown, 0.5, None)).as_deref(), Some(&grey[..]));
     }
 
+    /// Each key shows its stratagem's icon as the matcher draws it from the game's texture, 144x144, as
+    /// an 8-bit RGBA picture that icon_png can draw on.
     #[test]
-    fn the_catalog_takes_every_icon_from_the_built_in_data() {
-        let built_in = Data::Embedded;
-        let m = Matcher::load(&built_in).expect("the catalog from the built-in data");
-        let c = catalog(&m, &built_in).expect("every icon built in");
+    fn every_key_shows_its_stratagems_game_icon() {
+        let m = Matcher::load(&Data::Embedded).expect("the catalog from the built-in data");
+        let c = catalog(&m);
         assert_eq!(c.len(), m.catalog.len());
-        for (s, from) in c.iter().zip(&m.catalog) {
+        for (i, (s, from)) in c.iter().zip(&m.catalog).enumerate() {
             assert_eq!((s.name.as_str(), s.code.as_str()), (from.name.as_str(), from.code.as_str()));
-            assert!(matches!(s.png, Cow::Borrowed(_)), "{}: built-in icons are not copied", s.name);
-            assert_eq!(&s.png[..], &std::fs::read(data().join(from.icon_path())).unwrap()[..], "{}: not the file in data/", s.name);
-            let img = Img::decode_png(&s.png).unwrap_or_else(|e| panic!("{}: {e}", s.name));
-            assert_eq!((img.w, img.h), (144, 144), "{}", s.name);
+            let (w, h, px) = decode(&s.png);
+            assert_eq!((w, h), (ICON_SIZE, ICON_SIZE), "{}", s.name);
+            let want = m.icon(i);
+            let rgb = px.chunks(4).flat_map(|p| [p[0], p[1], p[2]]);
+            assert!(rgb.zip(&want.px).all(|(a, b)| (a as f32 - b).abs() <= 0.5), "{}: not the game's icon", s.name);
+            assert!(px.chunks(4).all(|p| p[3] == 255), "{}: not opaque", s.name);
         }
-        let Err(e) = catalog(&m, &Data::Dir("no/such/data".into())) else { panic!("found icons in a missing folder") };
-        assert!(e.contains("icons_144"), "{e}");
     }
 
     #[test]
@@ -1197,11 +1253,7 @@ mod tests {
 
         let data = Data::Embedded;
         let mut m = Matcher::load(&data).expect("catalog");
-        let catalog: Vec<Stratagem> = m
-            .catalog
-            .iter()
-            .map(|s| Stratagem { name: s.name.clone(), code: s.code.clone(), png: data.read(&s.icon_path()).expect("icon") })
-            .collect();
+        let catalog = catalog(&m);
         let idx = |name: &str| catalog.iter().position(|s| s.name == name).unwrap_or_else(|| panic!("no {name}"));
         let (reinforce, sos, resupply) = (idx("Reinforce"), idx("SoS Beacon"), idx("Resupply"));
         let (laser, quasar, warp, frv) =
@@ -1306,5 +1358,76 @@ mod tests {
         std::fs::write(&file, serde_json::to_vec(&json!({ "columns": 5, "frame_ms": ANIM.as_millis() as u64, "frames": frames })).unwrap())
             .expect("write frames");
         println!("{} frames written to {}", frames.len(), file.display());
+    }
+
+    /// Not a check: the keys the plugin draws for two real screenshots of the menu (read through the reader,
+    /// each row shown as a key shows it on first sight), the keys in standby, and the Scan key's four looks.
+    /// `tools/make_store_media.py` lays them out next to the screenshots for the Marketplace page.
+    /// cargo test --bin hd2-plugin -- --ignored --nocapture store_scenes
+    #[test]
+    #[ignore = "generator for the Marketplace media"]
+    fn store_scenes() {
+        use hd_scanner::matcher::column_box;
+
+        let data = Data::Embedded;
+        let mut m = Matcher::load(&data).expect("catalog");
+        let catalog = catalog(&m);
+        let keys = ["scan", "clear", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"];
+        let mut p = Plugin {
+            keys: HashMap::new(),
+            loadout: vec![],
+            catalog,
+            icons: HashMap::new(),
+            frame: 4,
+            state: GameState::Mission,
+            standby: false,
+        };
+        p.register(SCAN, "scan", &json!({}));
+        p.register(CLEAR, "clear", &json!({}));
+        for k in 1..=8 {
+            p.register(SLOT, &format!("s{k}"), &json!({ "slot": k }));
+        }
+        let shoot = |p: &mut Plugin| -> Vec<String> { keys.iter().map(|k| image_of(&p.paint(k)[0]).to_string()).collect() };
+
+        let mut scenes = serde_json::Map::new();
+        for fixture in ["menu_open", "menu_unavailable"] {
+            let col = Img::load_png(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(format!("{fixture}.png")))
+                .expect("fixture");
+            let (x0, y0, _, _) = column_box(2560, 1440, 1.0);
+            m.reset();
+            let rows = m.read_rows(&col, 1440, (x0, y0), 1.0);
+            let mut loadout: Loadout = vec![None; rows.iter().map(|r| r.slot + 1).max().unwrap_or(0)];
+            for r in rows {
+                let (status, fill) = match r.status {
+                    Status::Cooldown => (Status::Cooldown, r.fill_bottom),
+                    Status::Active => (Status::Active, r.fill_top),
+                    Status::Unavailable => (Status::Unavailable, 1.0),
+                    _ => (Status::Ready, 0.0),
+                };
+                let badge = if status == Status::Unavailable { None } else { r.badge };
+                loadout[r.slot] = Some(SlotView { index: r.index, status, fill, badge, ready: None });
+            }
+            p.loadout = loadout;
+            scenes.insert(fixture.into(), json!(shoot(&mut p)));
+        }
+        (p.loadout, p.standby, p.state) = (vec![], true, GameState::Missing);
+        scenes.insert("standby".into(), json!(shoot(&mut p)));
+
+        let mut scan = serde_json::Map::new();
+        for (name, standby, state) in [
+            ("start", true, GameState::Missing),
+            ("missing", false, GameState::Missing),
+            ("lobby", false, GameState::Lobby),
+            ("mission", false, GameState::Mission),
+        ] {
+            (p.standby, p.state) = (standby, state);
+            scan.insert(name.into(), json!(image_of(&p.paint("scan")[0])));
+        }
+
+        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/demo");
+        std::fs::create_dir_all(&out).expect("target/demo");
+        let file = out.join("scenes.json");
+        std::fs::write(&file, serde_json::to_vec(&json!({ "columns": 5, "scenes": scenes, "scan": scan })).unwrap()).expect("write scenes");
+        println!("scenes written to {}", file.display());
     }
 }

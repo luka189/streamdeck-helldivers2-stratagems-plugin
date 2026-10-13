@@ -1,5 +1,5 @@
 //! Where the reader's data comes from: the stratagem list and the pictures it matches, named by their
-//! path in the data folder ("stratagems.json", "icons_144/<icon>.png", "status/<template>.png").
+//! path in the data folder ("stratagems.json", "icons/<icon>.png", "status/<template>.png").
 
 use std::borrow::Cow;
 use std::path::PathBuf;
@@ -67,7 +67,7 @@ mod tests {
 
     #[test]
     fn both_sources_give_the_same_bytes_and_pictures() {
-        for rel in ["stratagems.json", "icons_144/Reinforce_Stratagem_Icon_Background.png", "status/digit_7.png"] {
+        for rel in ["stratagems.json", "icons/Reinforce_Stratagem_Icon_Background.png", "status/digit_7.png"] {
             let (built_in, on_disk) = (Data::Embedded.read(rel).unwrap(), dir().read(rel).unwrap());
             assert!(matches!(built_in, Cow::Borrowed(_)), "{rel}: built-in files are not copied");
             assert_eq!(built_in, on_disk, "{rel}");
@@ -78,9 +78,9 @@ mod tests {
 
     #[test]
     fn missing_or_broken_files_say_which() {
-        let Err(e) = Data::Embedded.read("icons_144/Nothing.png") else { panic!("read a file that is not built in") };
-        assert!(e.contains("icons_144/Nothing.png"), "{e}");
-        let Err(e) = dir().read("icons_144/Nothing.png") else { panic!("read a file that is not there") };
+        let Err(e) = Data::Embedded.read("icons/Nothing.png") else { panic!("read a file that is not built in") };
+        assert!(e.contains("icons/Nothing.png"), "{e}");
+        let Err(e) = dir().read("icons/Nothing.png") else { panic!("read a file that is not there") };
         assert!(e.contains("Nothing.png"), "{e}");
         let Err(e) = Data::Embedded.png("stratagems.json") else { panic!("decoded JSON as a picture") };
         assert!(e.starts_with("stratagems.json: "), "{e}");

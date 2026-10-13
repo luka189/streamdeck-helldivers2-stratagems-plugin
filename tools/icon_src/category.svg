@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
+  <g fill="#ffffff">
+    <path d="M72 8 L96 32 L82 32 L82 52 L62 52 L62 32 L48 32 Z"/>
+    <path d="M72 8 L96 32 L82 32 L82 52 L62 52 L62 32 L48 32 Z" transform="rotate(90 72 72)"/>
+    <path d="M72 8 L96 32 L82 32 L82 52 L62 52 L62 32 L48 32 Z" transform="rotate(180 72 72)"/>
+    <path d="M72 8 L96 32 L82 32 L82 52 L62 52 L62 32 L48 32 Z" transform="rotate(270 72 72)"/>
+    <circle cx="72" cy="72" r="9"/>
+  </g>
+</svg>

@@ -4,6 +4,9 @@
 # build.ps1 output: the plugin binary, its logs, and the packaged plugin
 /plugin/com.xiaodoudou.helldivers2-stratagems.sdPlugin/*.exe
 /plugin/com.xiaodoudou.helldivers2-stratagems.sdPlugin/*.log
+# tools/record_demo.py: the switch that makes the plugin record its keys, and the record
+/plugin/com.xiaodoudou.helldivers2-stratagems.sdPlugin/record-keys
+/plugin/com.xiaodoudou.helldivers2-stratagems.sdPlugin/keys-record.jsonl
 /dist/
 
 # full-size screenshots (several MB each); the tests use the crops in scanner/tests/fixtures
