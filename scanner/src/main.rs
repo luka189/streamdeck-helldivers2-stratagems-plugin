@@ -4,11 +4,12 @@ use std::time::{Duration, Instant};
 
 use hd_scanner::data::Data;
 use hd_scanner::img::Img;
-use hd_scanner::matcher::{Matcher, column_box};
+use hd_scanner::matcher::{Matcher, card_box, column_box};
 
 fn usage() -> ! {
     eprintln!("usage: hd-scanner bench <data dir> <frame.png | dir>...");
     eprintln!("       hd-scanner live <data dir> <seconds> [period ms]");
+    eprintln!("       hd-scanner card <data dir> <frame.png | dir>...");
     std::process::exit(2);
 }
 
@@ -16,6 +17,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("bench") if args.len() >= 3 => bench(Path::new(&args[1]), &args[2..]),
+        Some("card") if args.len() >= 3 => card(Path::new(&args[1]), &args[2..]),
         Some("lookalikes") if args.len() >= 2 => {
             let m = Matcher::load(&Data::Dir(PathBuf::from(&args[1]))).unwrap_or_else(|e| {
                 eprintln!("{e}");
@@ -107,6 +109,37 @@ fn live(data: &Path, secs: f64, period_ms: u64) {
     println!("read  {}", stat(&mut read_ms));
     println!("total {}", stat(&mut total_ms));
     println!("last rows: {last}");
+}
+
+/// Read the loadout screen's card in saved frames, one line a frame: its stratagems in menu order, or "no card".
+fn card(data: &Path, inputs: &[String]) {
+    let m = Matcher::load(&Data::Dir(data.to_path_buf())).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1)
+    });
+    for input in inputs {
+        let p = PathBuf::from(input);
+        let mut files: Vec<PathBuf> = if p.is_dir() {
+            std::fs::read_dir(&p)
+                .expect("read dir")
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|f| f.extension().is_some_and(|x| x == "png"))
+                .collect()
+        } else {
+            vec![p]
+        };
+        files.sort();
+        for f in files {
+            let Ok(frame) = Img::load_png(&f) else { continue };
+            let (x0, y0, x1, y1) = card_box(frame.w, frame.h);
+            let t = Instant::now();
+            let read = m.read_card(&frame.crop(x0 as isize, y0 as isize, x1 - x0, y1 - y0), frame.h, (x0, y0));
+            let what = read.map_or("no card".to_string(), |c| {
+                c.iter().map(|&(i, sure)| format!("{}{}", m.catalog[i].name, if sure { "" } else { "?" })).collect::<Vec<_>>().join(", ")
+            });
+            println!("{}: {what} ({:.1} ms)", f.file_name().unwrap_or_default().to_string_lossy(), t.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
 }
 
 /// Replay saved frames in order (row cache warm, like a live scan) and summarise what was read.

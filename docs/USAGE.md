@@ -21,8 +21,8 @@ A slot shows the stratagem at the same position in the game's stratagem menu. Th
 | 1 | Reinforce |
 | 2 | SOS Beacon |
 | 3 | Resupply |
-| 4 to 7 | Your four loadout stratagems, in menu order |
-| 8 and up | Stratagems a mission hands out, like the Hellbomb or the SSSD Delivery |
+| 4 to 7 | Your four loadout stratagems, in menu order. A mission that starts with stratagems of its own, like Call In Super Destroyer, lists those first, which moves yours along |
+| After them | Stratagems a mission hands out, like the Hellbomb or the SSSD Delivery |
 
 Each new Stratagem Slot key takes the first free slot. To change it, select the key and pick another number in its settings. The same panel has *Show name*, which writes the stratagem's name under its icon (off by default).
 
@@ -41,7 +41,9 @@ To set an input, click its box and press the key or mouse button, or choose one 
 
 Start the game, or press the Scan key while the game is closed: it shows a play button then, and starts the game through Steam.
 
-When a mission starts and your loadout isn't known yet, the plugin opens the stratagem menu to read it. The HUD shows up before you can open the menu (in the hellpod, while landing), so the plugin checks whether the menu really opened, and tries again every two seconds until it does, for about twenty seconds. If you open the menu yourself in the meantime, that counts too. After that, it follows what the HUD shows with the menu closed. Opening the menu yourself, or pressing the Scan key, reads everything again.
+Before a mission, the plugin watches for your card on the loadout screen, the one with your helldiver and the *Mission Stratagems* rows. As soon as it's on screen, the slot keys fill with what the stratagem menu will hold, in its order: Reinforce, SOS Beacon, Resupply, the mission's own stratagems, then the four you chose. They show as unavailable until the mission starts, since nothing can be called in before, and they change if you pick other stratagems.
+
+When a mission starts, the plugin opens the stratagem menu to read the loadout, even when the loadout screen already gave it: the menu shows what each stratagem's state is, and settles any slot the loadout screen got wrong. The HUD shows up before you can open the menu (in the hellpod, while landing), so the plugin checks whether the menu really opened, and tries again until it does, for about twenty seconds. After the loadout screen, it presses the menu key as soon as the HUD shows Reinforce and tries every second; otherwise, for instance when the plugin starts during a mission, it waits two seconds first and tries every two seconds. If you open the menu yourself in the meantime, that counts too. After that, it follows what the HUD shows with the menu closed. Opening the menu yourself, or pressing the Scan key, reads everything again.
 
 Press a slot key to call its stratagem in. The game has to be the window in front; if it isn't, the key shows a warning triangle and nothing is typed into the other window. The plugin also refuses a stratagem the game would refuse (cooling down, unavailable or already on its way), except in the very last moment of a cooldown: the last 0.3 s when it read the game's timer, the last 1.5 s when it had to estimate the end.
 
@@ -53,7 +55,7 @@ Press a slot key to call its stratagem in. The game has to be the window in fron
 | The stratagem's icon | Ready |
 | A beige fill rising from the bottom, going down as time passes | Cooling down. The fill shows how much of the cooldown is left |
 | A fill coming down from the top | On its way (activating, inbound or impact) |
-| The icon covered completely | Unavailable |
+| The icon covered completely | Unavailable, or read from the loadout screen and waiting for the mission |
 | A number in the bottom-right corner | The count the game shows, like the reinforcements left or the uses of a stratagem |
 | Black | Nothing in that slot this mission |
 
@@ -86,7 +88,7 @@ They are on the Scan key's settings panel and apply to every key.
 | Game resolution | auto | The game's size in pixels. *auto* measures the game's window, and the line under the box shows what was found. Type a size such as `2560x1440` only when that is wrong: when Windows hides the game's window from the plugin, the plugin falls back to the main screen's size, which differs from the game's if the game doesn't run at the screen's resolution |
 | Stratagem menu, Menu mode, Up, Down, Left, Right, Throw | Left Ctrl, Hold, W, S, A, D, none | See [Matching the game's controls](#matching-the-games-controls) |
 | Menu open delay | 120 ms | Wait after opening the menu, before the first arrow |
-| Scan menu wait | 350 ms | Extra wait before the Scan key reads the menu it opened |
+| Scan menu wait | 350 ms | Added to *Menu open delay*: the longest the plugin waits for a menu it opened to show. It reads the menu as soon as it has settled, and closes it right away |
 | Key hold | 35 ms | How long each key is held down |
 | Delay between keys | 40 ms | Pause between two arrows |
 

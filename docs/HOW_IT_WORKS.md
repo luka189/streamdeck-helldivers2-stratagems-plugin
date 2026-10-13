@@ -40,6 +40,14 @@ The rows of the menu sit at fixed places. At 2560x1440 the first icon's top is a
 
 A few stratagems share one icon, such as SSSD Delivery and Upload Data. For those, the matcher reads the arrow code on the row and picks the stratagem whose code it is.
 
+## Reading the loadout screen
+
+Before a mission, while no stratagem HUD shows, the plugin also captures the bottom-left corner of the window once a second, where the loadout screen shows the player's card. Its *Mission Stratagems* row holds the stratagems every mission gives (Reinforce first) and the mission's own, drawn like the menu's icons; the row under it holds the four the player chose, larger and without their frame. Together they are the stratagem menu, in its order. At 2560x1440 the first row's icons are 60 px wide from x = 80 every 81 px, at y = 1037; the second row's are 98 px wide from x = 78 every 114 px, at y = 1119; everything is scaled by the window's height.
+
+Each box is matched on the glyph alone, which works with or without the frame: the glyph of every icon is ranked on a small copy, then the best five are scored at full size. The card counts as on screen when its first icon is surely Reinforce, and its stratagems fill the slots once two reads in a row agree. They are shown unavailable, and marked as known from the loadout screen only: the mission's first readings take each slot over, the menu opened at mission start is read as usual, and a slot the open menu doesn't list is dropped.
+
+The card also tells the plugin that a mission is coming. For five minutes after it was last seen, the first stratagem HUD, which always shows Reinforce, is taken as the mission starting: the menu is opened at once and retried every second for twenty seconds, rather than after two seconds and every two seconds when nothing announced the mission.
+
 The icons are the game's own. `data/icons/` holds the texture the game keeps for each stratagem icon, taken from its files: two masks in one picture, red for the parts drawn in the stratagem type's colour and green for the cream parts. The matcher paints each one as the game does when it loads it, in the colours of the stratagem's type (gold for mission, red for offensive, blue for supply, green for defensive, from the `type` of `data/stratagems.json`) with the frame on top, and compares the screen with that.
 
 ## Following the game over time

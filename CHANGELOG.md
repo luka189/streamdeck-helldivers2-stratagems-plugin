@@ -4,6 +4,20 @@ What changed in each version of the plugin, newest first. The versions follow [s
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-13
+
+### Added
+
+- **The keys fill before the mission.** On the loadout screen, the plugin reads your card (your helldiver, with its *Mission Stratagems*) and fills the slot keys with what the stratagem menu will hold, in its order. They show as unavailable until the mission starts, follow your picks while you choose, and are checked against the menu at landing as before.
+
+### Changed
+
+- **A quicker look at the menu when a mission starts.** The plugin closes the menu as soon as it has read it, after about a quarter of a second instead of half a second. After the loadout screen, it opens the menu as soon as the HUD shows Reinforce and tries again every second, so the keys are ready about a second after landing.
+
+### Fixed
+
+- **No stray menu at landing.** When the game ignored the plugin's first press of the menu key during the landing, the plugin pressed it again to close a menu that wasn't open, which could open it for a moment instead.
+
 ## [0.4.0] - 2026-10-13
 
 ### Changed
@@ -40,7 +54,8 @@ The first version.
 - **A Clear Stratagem Slots key** that empties every slot until the next scan.
 - **Settings on the Scan key**, shared by every key: the scan period, the inputs, the timings, and the game's resolution for when its window can't be measured (the panel shows the size the plugin found).
 
-[Unreleased]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.4.0...dev
+[Unreleased]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.5.0...dev
+[0.5.0]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/releases/tag/v0.2.0
