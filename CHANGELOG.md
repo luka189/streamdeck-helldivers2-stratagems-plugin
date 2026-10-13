@@ -4,6 +4,19 @@ What changed in each version of the plugin, newest first. The versions follow [s
 
 ## [Unreleased]
 
+### Changed
+
+- **Throwing is a setting of its own.** The *Throw* input is now only the key you throw with, which Stratagem Setup keys always use; the new *Throw after calling in* checkbox decides whether the slot keys throw too. A configuration with a throw key set keeps throwing, as before.
+
+### Added
+
+- **Stratagem Setup keys.** A new action puts two to four of your loadout stratagems on one key: a press calls them in one after the other and throws each, skipping any that isn't ready. They are picked by their place in your loadout, so the key still finds them when a mission adds stratagems of its own to the menu. The key shows their icons side by side or in a square, each with its own cooldown. It needs the *Throw* input set on the Scan key.
+
+### Fixed
+
+- **"Super Destroyer Unavailable" is read as unavailable.** While the Super Destroyer is away, the game greys out every stratagem it delivers with that status line, which the plugin didn't know: the keys kept the state they had before, so a ready stratagem still looked ready.
+- **Setting inputs by pressing them.** While an input's box waits, any key or mouse button pressed in the panel is taken, the left and right buttons included, and the click that sets a button no longer starts waiting again, which made the box show "press a key..." until you clicked elsewhere. The lists next to the boxes are gone: pressing does it all.
+
 ## [0.5.1] - 2026-10-13
 
 ### Fixed

@@ -11,10 +11,10 @@
   input[type=checkbox] { width:auto; justify-self:start; margin:0; }
   input.key { cursor:pointer; text-align:center; font-weight:600; }
   input.key.listening { border-color:#ffe710; }
-  input.bad { border-color:#ff6b5e; }
+  input.bad, select.bad { border-color:#ff6b5e; }
   .hint { color:#999; font-size:11px; margin:4px 0; }
   #msg { min-height:16px; margin:8px 0 0; color:#999; font-size:12px; }
-  #msg.err { color:#ff6b5e; }
+  #msg.err, .hint.err { color:#ff6b5e; }
   a { color:#ffe710; cursor:pointer; text-decoration:none; }
 </style>
 </head>
@@ -23,6 +23,15 @@
   <div class="row"><label for="slot">Slot</label><select id="slot"></select></div>
   <div class="row"><label for="show_name">Show name</label><input id="show_name" type="checkbox"></div>
   <div class="hint">Nth stratagem read from the game, in order of appearance. Scan period, keys and timings are shared by all keys: set them on the Scan Now key.</div>
+</div>
+
+<div id="setupBlock" style="display:none">
+  <div class="row"><label for="setup1">First</label><select id="setup1" class="setup"></select></div>
+  <div class="row"><label for="setup2">Then</label><select id="setup2" class="setup"></select></div>
+  <div class="row"><label for="setup3">Then</label><select id="setup3" class="setup"></select></div>
+  <div class="row"><label for="setup4">Then</label><select id="setup4" class="setup"></select></div>
+  <div id="setupMsg" class="hint"></div>
+  <div class="hint">Stratagems of your loadout, numbered in the order you chose them: 1 is the first. They are found in the stratagem menu wherever they are, even when a mission adds stratagems of its own before them. A press calls each one in, in this order, and throws it before the next; one that isn't ready is skipped. It needs the Throw input, set on the Scan Now key.</div>
 </div>
 
 <div id="globalBlock" style="display:none">
@@ -44,8 +53,9 @@
 <div class="row"><label>Down</label><input class="key" id="down" readonly></div>
 <div class="row"><label>Left</label><input class="key" id="left" readonly></div>
 <div class="row"><label>Right</label><input class="key" id="right" readonly></div>
-<div class="row"><label>Throw (optional)</label><input class="key" id="throw_key" readonly placeholder="none"></div>
-<div class="hint">Match your key bindings in the game. Backspace clears the throw key while capturing.</div>
+<div class="row"><label>Throw</label><input class="key" id="throw_key" readonly placeholder="none"></div>
+<div class="row"><label for="auto_throw">Throw after calling in</label><input id="auto_throw" type="checkbox"></div>
+<div class="hint">Match your key bindings in the game. Throw is the key or button you throw a stratagem with: Stratagem Setup keys always throw, and the slot keys too when Throw after calling in is ticked. Backspace clears the throw key while capturing.</div>
 
 <h3>Timing (ms)</h3>
 <div class="row"><label for="menu_open_delay_ms">Menu open delay</label><input id="menu_open_delay_ms" type="number" min="0" max="2000" step="10"></div>
@@ -62,20 +72,52 @@ const $ = id => document.getElementById(id);
 const HELP = 'https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/blob/main/docs/USAGE.md';
 const KEYS = ['menu_key', 'up', 'down', 'left', 'right', 'throw_key'];
 const NUMS = ['scan_period', 'confirm_scans', 'icon_scale', 'menu_open_delay_ms', 'scan_open_wait_ms', 'key_hold_ms', 'key_delay_ms'];
-const BOOLS = ['auto_scan', 'auto_menu_scan'];
+const BOOLS = ['auto_scan', 'auto_menu_scan', 'auto_throw'];
 const LABELS = { scan_period: 'Scan period', confirm_scans: 'Confirm after', icon_scale: 'Icon scale', menu_open_delay_ms: 'Menu open delay',
   scan_open_wait_ms: 'Scan menu wait', key_hold_ms: 'Key hold', key_delay_ms: 'Delay between keys' };
 // mirrors engine::Config::default in the plugin
 const DEFAULTS = { auto_scan: true, auto_menu_scan: true, scan_period: 0.15, confirm_scans: 2, icon_scale: 1, resolution: 'auto', menu_key: 'lctrl', menu_mode: 'hold',
-  up: 'w', down: 's', left: 'a', right: 'd', throw_key: '', menu_open_delay_ms: 120, scan_open_wait_ms: 350, key_hold_ms: 35, key_delay_ms: 40 };
+  up: 'w', down: 's', left: 'a', right: 'd', throw_key: '', auto_throw: false, menu_open_delay_ms: 120, scan_open_wait_ms: 350, key_hold_ms: 35, key_delay_ms: 40 };
 let global = {};
 const MOUSE = { 0: 'mouse1', 1: 'mouse3', 2: 'mouse2', 3: 'mouse4', 4: 'mouse5' };
 const SPECIAL = { ControlLeft: 'lctrl', ControlRight: 'rctrl', ShiftLeft: 'lshift', ShiftRight: 'rshift', AltLeft: 'lalt', AltRight: 'ralt',
   ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Space: 'space', Tab: 'tab', Enter: 'enter', CapsLock: 'capslock', Escape: 'escape' };
 
-let ws, ctx, settings = {}, listening = null, msgTimer = null;
+let ws, ctx, settings = {}, listening = null, taken = null, msgTimer = null;
 const sel = $('slot');
 for (let i = 1; i <= 12; i++) sel.add(new Option(String(i), String(i)));
+// a Stratagem Setup key: two of the four loadout stratagems or more, each once; mirrors SETUP_* in the plugin
+const SETUP = ['setup1', 'setup2', 'setup3', 'setup4'];
+const SETUP_DEFAULT = [1, 2];
+for (const [k, id] of SETUP.entries()) {
+  if (k >= 2) $(id).add(new Option('none', ''));
+  for (let i = 1; i <= 4; i++) $(id).add(new Option(`Loadout ${i}`, String(i)));
+}
+function setupError(text) {
+  $('setupMsg').className = text ? 'hint err' : 'hint';
+  $('setupMsg').textContent = text;
+}
+function showSetup() {
+  const picked = Array.isArray(settings.loadout) && settings.loadout.length >= 2 ? settings.loadout : SETUP_DEFAULT;
+  SETUP.forEach((id, k) => { $(id).value = picked[k] ? String(picked[k]) : ''; $(id).classList.remove('bad'); });
+  setupError('');
+}
+// A stratagem picked twice is not saved: both lists turn red, the message says which one, and the last good choice
+// stays in effect until it is corrected, as on the Scan key's panel.
+function saveSetup() {
+  const picked = SETUP.map(id => $(id).value);
+  const twice = picked.filter((v, k) => v && picked.indexOf(v) !== k);
+  SETUP.forEach((id, k) => $(id).classList.toggle('bad', twice.includes(picked[k])));
+  if (twice.length) {
+    setupError(`Loadout ${twice[0]} is picked twice: each stratagem can be called once. Pick another one, or none.`);
+    return;
+  }
+  setupError('');
+  delete settings.slots; // menu slots, as a build before 0.5.2 saved them
+  settings.loadout = picked.map(Number).filter(n => n > 0);
+  ws.send(JSON.stringify({ event: 'setSettings', context: ctx, payload: settings }));
+}
+for (const id of SETUP) $(id).onchange = saveSetup;
 
 function keyName(e) {
   if (SPECIAL[e.code]) return SPECIAL[e.code];
@@ -84,34 +126,43 @@ function keyName(e) {
   if (/^F([1-9]|1[0-2])$/.test(e.code)) return e.code.toLowerCase();
   return null;
 }
-const PICK = [['', 'pick...'], ['up', 'Arrow Up'], ['down', 'Arrow Down'], ['left', 'Arrow Left'], ['right', 'Arrow Right'],
-  ['lctrl', 'Left Ctrl'], ['rctrl', 'Right Ctrl'], ['lshift', 'Left Shift'], ['lalt', 'Left Alt'], ['space', 'Space'], ['tab', 'Tab'],
-  ['capslock', 'Caps Lock'], ['mouse3', 'Middle mouse'], ['mouse4', 'Mouse 4'], ['mouse5', 'Mouse 5']];
-for (const id of KEYS) {
-  const p = document.createElement('select');
-  for (const [v, t] of PICK) p.add(new Option(t, v));
-  p.style.width = '110px';
-  p.onchange = () => { if (p.value) { $(id).value = p.value; saveGlobal(); } p.value = ''; };
-  $(id).parentNode.appendChild(p);
-}
 function stopListening() { if (listening) { listening.classList.remove('listening'); listening = null; } }
 
 for (const id of KEYS) {
   const el = $(id);
-  el.addEventListener('click', () => { stopListening(); listening = el; el.classList.add('listening'); el.value = 'press a key...'; });
+  el.addEventListener('click', () => {
+    if (taken === el) return; // the click that just gave this box its mouse button
+    stopListening(); listening = el; el.classList.add('listening'); el.value = 'press a key...';
+  });
   el.addEventListener('keydown', e => {
     e.preventDefault();
     if (e.code === 'Backspace' && id === 'throw_key') { el.value = ''; stopListening(); saveGlobal(); return; }
     const n = keyName(e);
     if (n) { el.value = n; stopListening(); saveGlobal(); }
   });
-  el.addEventListener('mousedown', e => { if (listening === el) { e.preventDefault(); el.value = MOUSE[e.button] || ''; stopListening(); saveGlobal(); } });
-  el.addEventListener('contextmenu', e => { if (listening === el) e.preventDefault(); });
   el.addEventListener('blur', () => { if (listening === el) { stopListening(); showConfig(); } });
+}
+// While a box waits for an input, a mouse button pressed anywhere in the panel is taken, not only on the box itself.
+// A click on another input's box or on a list switches to it instead.
+document.addEventListener('mousedown', e => {
+  if (!listening) return;
+  const t = e.target;
+  if (t !== listening && (t.tagName === 'SELECT' || t.classList.contains('key'))) { stopListening(); showConfig(); return; }
+  e.preventDefault(); // keeps the box focused, so it doesn't lose the key it waits for
+  const name = MOUSE[e.button];
+  if (name) { listening.value = name; taken = listening; stopListening(); saveGlobal(); }
+}, true);
+// the click ending a mouse press has reached the box by now
+document.addEventListener('click', () => { taken = null; });
+document.addEventListener('contextmenu', e => { if (listening) e.preventDefault(); }, true);
+
+// a configuration from before 0.5.2 has no auto_throw: a throw key set then meant throwing, as the plugin reads it
+function current() {
+  return { ...DEFAULTS, auto_throw: !!global.throw_key, ...global };
 }
 
 function showConfig() {
-  const c = { ...DEFAULTS, ...global };
+  const c = current();
   for (const id of KEYS) $(id).value = c[id];
   for (const id of NUMS) { $(id).value = c[id]; $(id).classList.remove('bad'); }
   for (const id of BOOLS) $(id).checked = !!c[id];
@@ -138,7 +189,7 @@ function resolutionValue() {
 // Every change is saved at once. A value out of range is not: its box turns red, the message says why, and the
 // last saved value stays in effect until it is corrected.
 function saveGlobal() {
-  const c = { ...DEFAULTS, ...global };
+  const c = current();
   const body = { menu_mode: $('menu_mode').value };
   for (const id of BOOLS) body[id] = $(id).checked;
   for (const id of KEYS) body[id] = $(id).value;
@@ -154,6 +205,9 @@ function saveGlobal() {
   $('resolution').classList.toggle('bad', res === null);
   body.resolution = res === null ? c.resolution : res;
   if (res === null) errors.push('Game resolution: type a size such as 2560x1440, or auto.');
+  const noThrow = body.auto_throw && !body.throw_key;
+  $('throw_key').classList.toggle('bad', noThrow);
+  if (noThrow) errors.push('Throw after calling in needs the Throw input: set the key or button you throw with.');
   global = body;
   ws.send(JSON.stringify({ event: 'setGlobalSettings', context: ctx, payload: body }));
   say(errors.length ? errors.join(' ') : 'Saved', errors.length > 0);
@@ -177,6 +231,9 @@ function connectElgatoStreamDeckSocket(port, uuid, registerEvent, info, actionIn
     $('slotBlock').style.display = 'block';
     sel.value = String(settings.slot || 1);
     $('show_name').checked = !!settings.show_name;
+  } else if (a.action === 'com.xiaodoudou.helldivers2-stratagems.setup') {
+    $('setupBlock').style.display = 'block';
+    showSetup();
   } else {
     $('globalBlock').style.display = 'block';
   }
@@ -191,6 +248,7 @@ function connectElgatoStreamDeckSocket(port, uuid, registerEvent, info, actionIn
       settings = m.payload.settings || {};
       sel.value = String(settings.slot || 1);
       $('show_name').checked = !!settings.show_name;
+      showSetup();
     } else if (m.event === 'didReceiveGlobalSettings') {
       global = m.payload.settings || {};
       showConfig();

@@ -9,10 +9,10 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "tools" / "icon_src"
 OUT = ROOT / "plugin" / "com.xiaodoudou.helldivers2-stratagems.sdPlugin" / "imgs"
-SIZES = {"plugin": 256, "category": 28, "scan": 72, "clear": 72, "acquiring": 72, "scan_icon": 20, "clear_icon": 20, "acquiring_icon": 20}
+SIZES = {"plugin": 256, "category": 28, "scan": 72, "clear": 72, "acquiring": 72, "setup": 72, "scan_icon": 20, "clear_icon": 20, "acquiring_icon": 20, "setup_icon": 20}
 # Icons of the Stream Deck actions list: Elgato's guidelines want them white (#FFFFFF) on transparent. Antialiased
 # edges come out of the renderer as 254 grey here and there, so their colour is set to pure white, keeping the alpha.
-WHITE_ONLY = {"category", "scan_icon", "clear_icon", "acquiring_icon"}
+WHITE_ONLY = {"category", "scan_icon", "clear_icon", "acquiring_icon", "setup_icon"}
 
 
 def main() -> int:

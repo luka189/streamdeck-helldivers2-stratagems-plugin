@@ -18,7 +18,7 @@ A Stream Deck plugin for Helldivers 2. It reads your loadout from the game's scr
 
 - **Finds your loadout by itself.** On the loadout screen, the keys already fill with the stratagems you pick. When the mission starts, the plugin opens the stratagem menu once and reads it. Each Stratagem Slot key then shows the stratagem at its position in the menu: Reinforce, SOS Beacon, Resupply, your four stratagems, and the ones a mission hands out.
 - **Shows what the game shows.** A key fills up from the bottom while its stratagem cools down, fills from the top while a call-in is on its way, and is covered when the stratagem is unavailable. The game's counters come along too, like the reinforcements left or the uses of the Orbital Laser.
-- **Calls stratagems in.** Press a key and the plugin enters the code with your own key bindings, in hold or toggle mode. It refuses a stratagem that isn't ready, and never types into another window.
+- **Calls stratagems in.** Press a key and the plugin enters the code with your own key bindings, in hold or toggle mode. It refuses a stratagem that isn't ready, and never types into another window. A Stratagem Setup key calls two to four of them in with one press, throwing each in turn.
 - **Stays out of the way.** While the game is closed it captures nothing and only checks every two seconds whether the game has started. The Scan key turns into a start button that launches the game through Steam.
 
 The plugin only looks at the screen and presses keys, the way you do. It doesn't open the game's process, read its memory or touch its files.

@@ -40,6 +40,23 @@
       ]
     },
     {
+      "UUID": "com.xiaodoudou.helldivers2-stratagems.setup",
+      "Name": "Stratagem Setup",
+      "Tooltip": "Calls in two to four stratagem slots one after the other, throwing each; a stratagem that is not ready is skipped.",
+      "Icon": "imgs/setup_icon",
+      "PropertyInspectorPath": "pi/pi.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/setup",
+          "TitleAlignment": "bottom",
+          "FontSize": 10
+        }
+      ]
+    },
+    {
       "UUID": "com.xiaodoudou.helldivers2-stratagems.rescan",
       "Name": "Scan Now",
       "Tooltip": "Reads the stratagems from the game immediately, or starts the game when it is not running. Its panel holds the settings shared by every key.",
