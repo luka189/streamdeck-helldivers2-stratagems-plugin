@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn decode_png_reads_bytes_as_load_png_reads_files() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/icons_144/Reinforce_Stratagem_Icon_Background.png");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/icons/Reinforce_Stratagem_Icon_Background.png");
         let (file, bytes) = (Img::load_png(&path).unwrap(), Img::decode_png(&std::fs::read(&path).unwrap()).unwrap());
         assert_eq!((file.w, file.h, &file.px), (bytes.w, bytes.h, &bytes.px));
         assert!(Img::decode_png(b"not a png at all").is_err());
@@ -356,8 +356,8 @@ mod tests {
     #[test]
     fn load_png_reads_the_data_files() {
         let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("../data");
-        let icon = Img::load_png(&data.join("icons_144/Reinforce_Stratagem_Icon_Background.png")).unwrap();
-        assert_eq!((icon.w, icon.h), (144, 144));
+        let icon = Img::load_png(&data.join("icons/Reinforce_Stratagem_Icon_Background.png")).unwrap();
+        assert_eq!((icon.w, icon.h), (256, 256));
         assert!(icon.px.iter().all(|v| (0.0..=255.0).contains(v)));
         let arrow = Img::load_png(&data.join("status/arrow_up.png")).unwrap();
         assert_eq!((arrow.w, arrow.h), (26, 25));

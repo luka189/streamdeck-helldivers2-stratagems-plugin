@@ -1,4 +1,9 @@
-"""Download the stratagem list (name, code, cooldown) and icons from helldivers.wiki.gg."""
+"""Update the names, codes and cooldowns of data/stratagems.json from helldivers.wiki.gg.
+
+Each stratagem keeps its "type" and "icon", which name the game's own texture in data/icons/: those come from the
+game's files, not from the wiki. A stratagem the wiki lists and the file lacks is reported and left out until its
+texture is added.
+"""
 import html
 import json
 import re
@@ -8,8 +13,7 @@ from pathlib import Path
 
 BASE = "https://helldivers.wiki.gg"
 ROOT = Path(__file__).resolve().parent.parent
-DATA = ROOT / "data"
-ICONS = DATA / "icons_svg"
+CATALOG = ROOT / "data" / "stratagems.json"
 ARROW = {"Up": "U", "Down": "D", "Left": "L", "Right": "R"}
 
 
@@ -20,43 +24,38 @@ def get(url: str) -> bytes:
 
 
 def main() -> int:
-    ICONS.mkdir(parents=True, exist_ok=True)
+    known = {s["name"]: s for s in json.loads(CATALOG.read_text(encoding="utf-8"))}
     page = json.loads(get(f"{BASE}/api.php?action=parse&page=Stratagems&prop=text&format=json"))
     text = page["parse"]["text"]["*"]
 
-    out = []
+    out, new = [], []
     seen = set()
     for row in re.findall(r"<tr>(.*?)</tr>", text, flags=re.S):
         cells = re.findall(r"<td[^>]*>(.*?)</td>", row, flags=re.S)
         if len(cells) < 4:
             continue
-        icon = re.search(r'src="(/images/[^"?]*Stratagem_Icon[^"?]*\.svg)', cells[0])
-        name = re.sub(r"<[^>]+>", "", cells[1]).strip()
+        name = html.unescape(re.sub(r"<[^>]+>", "", cells[1]).strip())
         arrows = re.findall(r'alt="Stratagem Arrow (\w+)\.svg"', cells[2])
-        if not icon or not name or not arrows or name in seen:
+        if not name or not arrows or name in seen:
             continue
         seen.add(name)
-        cd = re.sub(r"<[^>]+>", "", cells[3]).strip()
+        if name not in known:
+            new.append(name)
+            continue
         out.append({
-            "name": html.unescape(name),
+            "name": name,
             "code": "".join(ARROW[a] for a in arrows),
-            "cooldown": cd,
-            "icon": Path(icon.group(1)).name,
+            "cooldown": re.sub(r"<[^>]+>", "", cells[3]).strip(),
+            "type": known[name]["type"],
+            "icon": known[name]["icon"],
         })
 
-    (DATA / "stratagems.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
+    CATALOG.write_text(json.dumps(out, indent=2), encoding="utf-8", newline="\n")
     print(f"{len(out)} stratagems")
-
-    total = 0
-    for s in out:
-        dest = ICONS / s["icon"]
-        if dest.exists():
-            continue
-        blob = get(f"{BASE}/images/{s['icon']}")
-        dest.write_bytes(blob)
-        total += len(blob)
-        print("icon", s["icon"], len(blob))
-    print(f"downloaded {total} bytes")
+    if gone := sorted(set(known) - seen):
+        print("no longer on the wiki, dropped:", ", ".join(gone))
+    if new:
+        print("new on the wiki, left out until their icon is in data/icons:", ", ".join(new))
     return 0
 
 

@@ -7,7 +7,7 @@ What changed in each version of the plugin, newest first. The versions follow [s
 ### Changed
 
 - **New icons.** The plugin icon and the category icon are original drawings (four stratagem arrows) instead of the game's Reinforce icon, and the icons of the actions list are pure white on transparent, as the Elgato Marketplace asks.
-- **Sharper stratagem keys.** The keys show each stratagem's symbol as a vector redrawing (from nvigneux/Helldivers-2-Stratagems-icons-svg) in a frame like the game's, instead of the wiki's small pictures. The few stratagems the game draws with another one's icon (the drills, the data uploads) show that icon's symbol, and the Tactical Video Camera, which the set lacks, has a symbol traced in the same style.
+- **The game's own icons, sharp on the keys.** The plugin now takes the stratagem icons from the game's files instead of the wiki's copies, some of which were out of date: the game has since added markers to the backpacks and the expendable weapons and redrawn a few icons. The keys show them at full size, sharper than the wiki's small pictures, and the screen is read against the same icons. The Tectonic Drill, which the game draws with an icon of its own, is no longer mixed up with the other drills.
 - **The settings save themselves.** The Scan key's panel has no Save button any more: each change is saved as you make it. On/off settings are checkboxes, and a value out of range is outlined in red with the reason, while the last good value stays in effect. A *How to use* link opens the guide.
 
 ## [0.3.0] - 2026-10-11

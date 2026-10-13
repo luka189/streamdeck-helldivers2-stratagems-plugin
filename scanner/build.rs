@@ -1,11 +1,11 @@
 //! Builds the data the reader needs into the crate (`Data::Embedded`): ../data/stratagems.json and the
-//! pictures in ../data/icons_144, ../data/keys_144 and ../data/status. The plugin reads them from there, as Marketplace DRM
+//! pictures in ../data/icons and ../data/status. The plugin reads them from there, as Marketplace DRM
 //! keeps a plugin from reading its own files. Writes `$OUT_DIR/embedded_data.rs`, a table sorted by path.
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-const DIRS: [&str; 3] = ["icons_144", "keys_144", "status"];
+const DIRS: [&str; 2] = ["icons", "status"];
 
 fn main() {
     let data = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR")).join("../data");

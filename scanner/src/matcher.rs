@@ -41,6 +41,8 @@ pub struct Stratagem {
     pub name: String,
     pub code: String,
     pub cooldown: String,
+    #[serde(rename = "type")]
+    pub kind: Kind,
     pub icon: String,
 }
 
@@ -50,24 +52,68 @@ impl Stratagem {
         format!("{stem}.png")
     }
 
-    /// Its icon's path in the data folder (see `Data`).
+    /// Its icon's texture in the data folder (see `Data` and `game_icon`).
     pub fn icon_path(&self) -> String {
-        format!("icons_144/{}", self.png())
+        format!("icons/{}", self.png())
     }
+}
 
-    /// The picture its key shows, in the data folder: named after the stratagem (tools/make_key_icons.py), as
-    /// stratagems sharing one game icon can have different symbols. Missing for a stratagem without a symbol.
-    pub fn key_path(&self) -> String {
-        let mut slug = String::new();
-        for c in self.name.chars() {
-            if c.is_ascii_alphanumeric() {
-                slug.push(c);
-            } else if !slug.ends_with('_') {
-                slug.push('_');
+/// A stratagem's type, which colours its icon.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    Mission,
+    Offensive,
+    Supply,
+    Defensive,
+}
+
+impl Kind {
+    /// The colour of the icon's frame and coloured parts, and of its inside.
+    fn colours(self) -> ([f32; 3], [f32; 3]) {
+        match self {
+            Kind::Mission => ([201.0, 178.0, 105.0], [54.0, 52.0, 38.0]),
+            Kind::Offensive => ([220.0, 100.0, 85.0], [25.0, 3.0, 1.0]),
+            Kind::Supply => ([85.0, 185.0, 210.0], [1.0, 20.0, 25.0]),
+            Kind::Defensive => ([105.0, 150.0, 85.0], [8.0, 25.0, 1.0]),
+        }
+    }
+}
+
+pub const ICON_SIZE: usize = 144; // side of the icons the matcher keeps, and of the keys
+const ICON_CREAM: [f32; 3] = [255.0, 255.0, 238.0];
+const ICON_FRAME: f64 = 7.85 / 144.0; // the frame the game draws around an icon, as a share of its side
+
+/// A stratagem icon as the game draws it, from its texture in data/icons (taken from the game's files): the
+/// texture's red marks the parts in the type's colour, its green the cream parts, over the dark inside, and the
+/// frame goes on top.
+pub fn game_icon(texture: &Img, kind: Kind) -> Img {
+    let (frame, inside) = kind.colours();
+    let border = ICON_FRAME * texture.w as f64;
+    let (full, part) = (border as usize, border.fract() as f32);
+    let mut out = Img::new(texture.w, texture.h);
+    for y in 0..texture.h {
+        for x in 0..texture.w {
+            let p = (y * texture.w + x) * 3;
+            let (mut a, mut b) = (texture.px[p] / 255.0, texture.px[p + 1] / 255.0);
+            if a + b > 1.0 {
+                (a, b) = (a / (a + b), b / (a + b));
+            }
+            let edge = x.min(y).min(texture.w - 1 - x).min(texture.h - 1 - y);
+            let f = if edge < full {
+                1.0
+            } else if edge == full {
+                part
+            } else {
+                0.0
+            };
+            for c in 0..3 {
+                let v = inside[c] * (1.0 - a - b) + frame[c] * a + ICON_CREAM[c] * b;
+                out.px[p + c] = v * (1.0 - f) + frame[c] * f;
             }
         }
-        format!("keys_144/{}.png", slug.trim_matches('_'))
     }
+    out
 }
 
 #[derive(Debug, Clone)]
@@ -216,12 +262,13 @@ impl Matcher {
         let mut catalog = Vec::new();
         let mut raw = Vec::new();
         for s in all {
-            let img = data.png(&s.icon_path())?;
-            if img.px.iter().all(|&v| v == 0.0) {
+            let texture = data.png(&s.icon_path())?;
+            if texture.px.iter().all(|&v| v == 0.0) {
                 continue;
             }
+            // kept at ICON_SIZE: every scan size is smaller, and 256 px floats would cost 0.8 MB an icon
+            raw.push(game_icon(&texture, s.kind).resize_area(ICON_SIZE, ICON_SIZE));
             catalog.push(s);
-            raw.push(img);
         }
         let low: Vec<Vec<f32>> = raw.iter().map(|r| normalized(&r.resize_area(ROW_LOW, ROW_LOW).px)).collect();
         let mut lookalikes = vec![Vec::new(); low.len()];
@@ -239,6 +286,11 @@ impl Matcher {
 
     pub fn reset(&mut self) {
         self.last.clear();
+    }
+
+    /// The icon of catalog stratagem `index` as the game draws it (see `game_icon`), ICON_SIZE square.
+    pub fn icon(&self, index: usize) -> &Img {
+        &self.raw[index]
     }
 
     fn prepare(&mut self, size: usize) {
@@ -728,11 +780,37 @@ mod tests {
 
     #[test]
     fn png_name_comes_from_the_svg_name() {
-        let png = |icon: &str| Stratagem { name: String::new(), code: String::new(), cooldown: String::new(), icon: icon.into() }.png();
+        let png = |icon: &str| {
+            Stratagem { name: String::new(), code: String::new(), cooldown: String::new(), kind: Kind::Supply, icon: icon.into() }.png()
+        };
         assert_eq!(png("Reinforce_Stratagem_Icon_Background.svg"), "Reinforce_Stratagem_Icon_Background.png");
         assert_eq!(png("W.A.S.P._Launcher_Stratagem_Icon_Background.svg"), "W.A.S.P._Launcher_Stratagem_Icon_Background.png");
         assert_eq!(png("sub/dir/Drill.svg"), "Drill.png");
         assert_eq!(png("NoExtension"), "NoExtension.png");
+    }
+
+    #[test]
+    fn game_icon_paints_the_texture_in_the_type_colours_inside_the_frame() {
+        // a 144 px texture: red (coloured part) at (40, 40), green (cream part) at (60, 60), half of each at (80, 80)
+        let mut t = Img::new(144, 144);
+        let mut set = |x: usize, y: usize, rgb: [f32; 3]| t.px[(y * 144 + x) * 3..(y * 144 + x) * 3 + 3].copy_from_slice(&rgb);
+        set(40, 40, [255.0, 0.0, 0.0]);
+        set(60, 60, [0.0, 255.0, 0.0]);
+        set(80, 80, [255.0, 255.0, 0.0]);
+        set(2, 70, [0.0, 255.0, 0.0]); // under the frame
+        let icon = game_icon(&t, Kind::Offensive);
+        let at = |x: usize, y: usize| -> [f32; 3] { std::array::from_fn(|c| icon.px[(y * 144 + x) * 3 + c]) };
+        let ((frame, inside), cream) = (Kind::Offensive.colours(), ICON_CREAM);
+        assert_eq!(at(40, 40), frame);
+        assert_eq!(at(60, 60), cream);
+        assert_eq!(at(80, 80), std::array::from_fn(|c| (frame[c] + cream[c]) / 2.0), "parts sharing a pixel share it");
+        assert_eq!(at(30, 100), inside);
+        assert_eq!(at(2, 70), frame, "the frame goes on top");
+        for (x, y) in [(0, 0), (6, 70), (70, 137), (143, 143)] {
+            assert_eq!(at(x, y), frame, "{x},{y}");
+        }
+        assert!((0..3).all(|c| at(7, 70)[c] > inside[c] && at(7, 70)[c] < frame[c].max(inside[c]) + 1.0), "the frame's soft edge");
+        assert_eq!(at(8, 70), inside);
     }
 
     #[test]
@@ -914,8 +992,8 @@ mod tests {
             ("SSSD Delivery", "LRUUU", &["Upload Data", "Reinforcement Pods"]), // same code: interchangeable
             ("Hive Breaker Drill", "LLLUDRDD", &["Aquifer Drill"]),
             ("Aquifer Drill", "DDLRDD", &["Prospecting Drill"]),
-            ("Prospecting Drill", "UDUDUD", &["Tectonic Drill"]),
-            ("Tectonic Drill", "DDLLDD", &["Activate E-711 Extraction Drill"]),
+            ("Prospecting Drill", "DDLLDD", &["Activate E-711 Extraction Drill"]),
+            ("Tectonic Drill", "UDUDUD", &["Tectonic Drill"]), // a drill with its own icon
             ("Cargo Container", "UUDDLLD", &["Portable Comms Relay"]),
             ("Portable Comms Relay", "UUDDRD", &["Cargo Container"]),
         ] {

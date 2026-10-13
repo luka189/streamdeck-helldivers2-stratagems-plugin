@@ -51,7 +51,7 @@ Measured on the development PC, with the game at 2560x1440:
 | CPU while the game runs | About 7% of one core (734 ms of CPU time over 10 s on the ship) |
 | CPU while the game is closed | Under 1% of one core (94 ms of CPU time over 10 s): nothing is captured, the plugin only checks every two seconds whether the game has started |
 | Memory | About 64 MB |
-| Download | 1.2 MB |
+| Download | 1.3 MB |
 
 A scan captures only the column of stratagem icons and the start of their status lines, 332x993 pixels at 2560x1440, about 9% of the screen. The plugin keeps the game's window and process between scans instead of looking them up each time, and redraws a key only when what it shows changes. The scan period is a setting ([USAGE.md](docs/USAGE.md#all-settings)): a longer one costs less and reacts later.
 
@@ -70,6 +70,6 @@ A scan captures only the column of stratagem icons and the start of their status
 
 A fan project, not made, endorsed or supported by Arrowhead Game Studios, Sony Interactive Entertainment or Elgato.
 
-Helldivers and Helldivers 2, and everything from the game this plugin shows or uses (the stratagem names, icons, codes and status words), belong to Sony Interactive Entertainment and Arrowhead Game Studios; their copyrights and trademarks stay theirs. They are used here only to show which stratagem is which. Stream Deck and Elgato are trademarks of Corsair. The stratagem list, codes, cooldowns and icons were collected from the [Helldivers Wiki](https://helldivers.wiki.gg/wiki/Stratagems). The stratagem symbols on the keys are the SVG redrawings of [nvigneux/Helldivers-2-Stratagems-icons-svg](https://github.com/nvigneux/Helldivers-2-Stratagems-icons-svg), made for the Stratagem Hero Trainer.
+Helldivers and Helldivers 2, and everything from the game this plugin shows or uses (the stratagem names, icons, codes and status words), belong to Sony Interactive Entertainment and Arrowhead Game Studios; their copyrights and trademarks stay theirs. They are used here only to show which stratagem is which. Stream Deck and Elgato are trademarks of Corsair. The stratagem list, codes and cooldowns were collected from the [Helldivers Wiki](https://helldivers.wiki.gg/wiki/Stratagems). The stratagem icons, which the plugin recognises on screen and shows on the keys, were taken from the game's own files.
 
 The plugin's own code and documentation are under the [Apache License 2.0](LICENSE). That license doesn't cover the game's material.

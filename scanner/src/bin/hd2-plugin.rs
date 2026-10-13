@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 use hd_scanner::capture::{Source, set_dpi_aware};
 use hd_scanner::data::Data;
 use hd_scanner::engine::{self, Config, Engine, GameState, SlotView, Status};
+use hd_scanner::img::Img;
 use hd_scanner::matcher::Matcher;
 
 const SLOT: &str = "com.xiaodoudou.helldivers2-stratagems.slot";
@@ -50,19 +51,25 @@ enum Event {
 struct Stratagem {
     name: String,
     code: String,
-    png: Cow<'static, [u8]>, // the picture its key shows, as stored
+    png: Vec<u8>, // the picture its key shows: an 8-bit RGBA PNG, ICON_SIZE square
 }
 
-/// The matcher's catalog with the picture each stratagem's key shows, read from `data`: its symbol framed like the
-/// game's icons (keys_144), or the game's icon itself for a stratagem without a symbol.
-fn catalog(m: &Matcher, data: &Data) -> Result<Vec<Stratagem>, String> {
-    m.catalog
-        .iter()
-        .map(|s| {
-            let png = data.read(&s.key_path()).or_else(|_| data.read(&s.icon_path()))?;
-            Ok(Stratagem { name: s.name.clone(), code: s.code.clone(), png })
-        })
-        .collect()
+/// The matcher's catalog with the picture each stratagem's key shows: its icon as the game draws it, made from the
+/// game's own texture: the very icon the matcher compares the screen with.
+fn catalog(m: &Matcher) -> Vec<Stratagem> {
+    m.catalog.iter().enumerate().map(|(i, s)| Stratagem { name: s.name.clone(), code: s.code.clone(), png: png_rgba(m.icon(i)) }).collect()
+}
+
+/// An opaque 8-bit RGBA PNG of `img`.
+fn png_rgba(img: &Img) -> Vec<u8> {
+    let px: Vec<u8> =
+        img.px.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255.0].map(|v| v.round().clamp(0.0, 255.0) as u8)).collect();
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::new(&mut out, img.w as u32, img.h as u32);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header().and_then(|mut w| w.write_image_data(&px)).expect("encoding into memory");
+    out
 }
 
 static LOG: OnceLock<(Mutex<std::fs::File>, Instant)> = OnceLock::new();
@@ -654,13 +661,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let catalog = match catalog(&engine.lock().unwrap().matcher, &data) {
-        Ok(c) => c,
-        Err(e) => {
-            log(format!("cannot load the icons: {e}"));
-            std::process::exit(1);
-        }
-    };
+    let catalog = catalog(&engine.lock().unwrap().matcher);
     let names: Vec<String> = catalog.iter().map(|s| s.name.clone()).collect();
     log(format!("loaded {} stratagems", catalog.len()));
     let cfg = Arc::new(Mutex::new(Config::default()));
@@ -860,14 +861,16 @@ mod tests {
     use super::*;
     use hd_scanner::engine::Badge;
     use hd_scanner::img::Img;
+    use hd_scanner::matcher::ICON_SIZE;
 
-    fn data() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../data")
-    }
-
-    /// Reinforce's icon, as built in.
-    fn icon() -> Cow<'static, [u8]> {
-        Data::Embedded.read("icons_144/Reinforce_Stratagem_Icon_Background.png").expect("built in")
+    /// Reinforce's key picture, as the plugin makes it.
+    fn icon() -> Vec<u8> {
+        static ICON: OnceLock<Vec<u8>> = OnceLock::new();
+        ICON.get_or_init(|| {
+            let m = Matcher::load(&Data::Embedded).expect("built in");
+            catalog(&m).into_iter().find(|s| s.name == "Reinforce").expect("Reinforce").png
+        })
+        .clone()
     }
 
     fn sv(index: usize, status: Status, fill: f32, badge: Option<Badge>) -> SlotView {
@@ -1033,23 +1036,22 @@ mod tests {
         assert_eq!(icon_png(&grey, &sv(0, Status::Cooldown, 0.5, None)).as_deref(), Some(&grey[..]));
     }
 
+    /// Each key shows its stratagem's icon as the matcher draws it from the game's texture, 144x144, as
+    /// an 8-bit RGBA picture that icon_png can draw on.
     #[test]
-    fn the_catalog_takes_every_icon_from_the_built_in_data() {
-        let built_in = Data::Embedded;
-        let m = Matcher::load(&built_in).expect("the catalog from the built-in data");
-        let c = catalog(&m, &built_in).expect("every icon built in");
+    fn every_key_shows_its_stratagems_game_icon() {
+        let m = Matcher::load(&Data::Embedded).expect("the catalog from the built-in data");
+        let c = catalog(&m);
         assert_eq!(c.len(), m.catalog.len());
-        for (s, from) in c.iter().zip(&m.catalog) {
+        for (i, (s, from)) in c.iter().zip(&m.catalog).enumerate() {
             assert_eq!((s.name.as_str(), s.code.as_str()), (from.name.as_str(), from.code.as_str()));
-            assert!(matches!(s.png, Cow::Borrowed(_)), "{}: built-in icons are not copied", s.name);
-            // the framed symbol when there is one, the game's icon otherwise
-            let file = std::fs::read(data().join(from.key_path())).or_else(|_| std::fs::read(data().join(from.icon_path()))).unwrap();
-            assert_eq!(&s.png[..], &file[..], "{}: not the file in data/", s.name);
-            let img = Img::decode_png(&s.png).unwrap_or_else(|e| panic!("{}: {e}", s.name));
-            assert_eq!((img.w, img.h), (144, 144), "{}", s.name);
+            let (w, h, px) = decode(&s.png);
+            assert_eq!((w, h), (ICON_SIZE, ICON_SIZE), "{}", s.name);
+            let want = m.icon(i);
+            let rgb = px.chunks(4).flat_map(|p| [p[0], p[1], p[2]]);
+            assert!(rgb.zip(&want.px).all(|(a, b)| (a as f32 - b).abs() <= 0.5), "{}: not the game's icon", s.name);
+            assert!(px.chunks(4).all(|p| p[3] == 255), "{}: not opaque", s.name);
         }
-        let Err(e) = catalog(&m, &Data::Dir("no/such/data".into())) else { panic!("found icons in a missing folder") };
-        assert!(e.contains("icons_144"), "{e}");
     }
 
     #[test]
@@ -1206,7 +1208,7 @@ mod tests {
 
         let data = Data::Embedded;
         let mut m = Matcher::load(&data).expect("catalog");
-        let catalog = catalog(&m, &data).expect("catalog");
+        let catalog = catalog(&m);
         let idx = |name: &str| catalog.iter().position(|s| s.name == name).unwrap_or_else(|| panic!("no {name}"));
         let (reinforce, sos, resupply) = (idx("Reinforce"), idx("SoS Beacon"), idx("Resupply"));
         let (laser, quasar, warp, frv) =
@@ -1324,7 +1326,7 @@ mod tests {
 
         let data = Data::Embedded;
         let mut m = Matcher::load(&data).expect("catalog");
-        let catalog = catalog(&m, &data).expect("catalog");
+        let catalog = catalog(&m);
         let keys = ["scan", "clear", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"];
         let mut p = Plugin {
             keys: HashMap::new(),
