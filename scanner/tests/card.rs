@@ -12,23 +12,15 @@ use hd_scanner::matcher::{Matcher, card_box};
 const FRAME_W: usize = 2560;
 const FRAME_H: usize = 1440;
 
-/// What each frame shows: the card's stratagems in menu order, or None for no card.
+/// What each frame shows: the card's stratagems in menu order, or None for no card. The mission's own stratagem in
+/// the first row (Call In Super Destroyer here) is not read: most of those only join the menu later in a mission.
 const CARDS: &[(&str, Option<&[&str]>)] = &[
     (
         "card_ready",
-        Some(&[
-            "Reinforce",
-            "SoS Beacon",
-            "Resupply",
-            "Call In Super Destroyer",
-            "Orbital Laser",
-            "LAS-98 Laser Cannon",
-            "LIFT-182 Warp Pack",
-            "M-102 Gunner FRV",
-        ]),
+        Some(&["Reinforce", "SoS Beacon", "Resupply", "Orbital Laser", "LAS-98 Laser Cannon", "LIFT-182 Warp Pack", "M-102 Gunner FRV"]),
     ),
-    // before the player has chosen: the mission's row only
-    ("card_mission_only", Some(&["Reinforce", "SoS Beacon", "Resupply", "Call In Super Destroyer"])),
+    // before the player has chosen: the stratagems every mission gives only
+    ("card_mission_only", Some(&["Reinforce", "SoS Beacon", "Resupply"])),
     // choosing a stratagem: the card is hidden behind the list
     ("card_choosing", None),
 ];
@@ -75,10 +67,10 @@ fn the_card_reads_in_menu_order_and_surely() {
 
 #[test]
 fn the_card_box_scales_with_the_window_and_stays_inside_it() {
-    assert_eq!(card_box(2560, 1440), (70, 1029, 555, 1225));
+    assert_eq!(card_box(2560, 1440), (70, 1029, 526, 1225));
     let (x0, y0, x1, y1) = card_box(1920, 1080);
     assert_eq!((x0, y0), (53, 772));
-    assert!(x1 <= 1920 && y1 <= 1080 && (x1, y1) == (416, 919), "{x1},{y1}");
+    assert!(x1 <= 1920 && y1 <= 1080 && (x1, y1) == (395, 919), "{x1},{y1}");
     let (_, _, x1, y1) = card_box(400, 1440);
     assert_eq!((x1, y1), (400, 1225), "clamped to a narrow window");
 }

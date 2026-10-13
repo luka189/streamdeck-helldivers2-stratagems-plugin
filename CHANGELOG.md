@@ -4,6 +4,10 @@ What changed in each version of the plugin, newest first. The versions follow [s
 
 ## [Unreleased]
 
+### Fixed
+
+- **No mission stratagems on the keys before the mission.** On the loadout screen, the keys showed the mission's own stratagems too, like the Hellbomb or the SSSD Delivery, which the game only hands out later in the mission, and that moved your four along by one key. The keys now show Reinforce, SOS Beacon, Resupply and your four; the menu read at landing adds any stratagem a mission starts with.
+
 ## [0.5.0] - 2026-10-13
 
 ### Added
