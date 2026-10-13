@@ -8,32 +8,34 @@
   h3 { margin:14px 0 4px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:#999; font-weight:600; }
   .row { display:grid; grid-template-columns:120px 1fr auto; gap:8px; align-items:center; margin:4px 0; }
   input, select { background:#3b3b3b; color:#d8d8d8; border:1px solid #555; border-radius:4px; padding:4px 8px; font:inherit; width:100%; box-sizing:border-box; }
+  input[type=checkbox] { width:auto; justify-self:start; margin:0; }
   input.key { cursor:pointer; text-align:center; font-weight:600; }
   input.key.listening { border-color:#ffe710; }
-  button { background:#ffe710; color:#111; border:0; border-radius:4px; padding:6px 14px; font:inherit; font-weight:600; cursor:pointer; }
+  input.bad { border-color:#ff6b5e; }
   .hint { color:#999; font-size:11px; margin:4px 0; }
-  #msg { margin-left:8px; color:#999; }
+  #msg { min-height:16px; margin:8px 0 0; color:#999; font-size:12px; }
   #msg.err { color:#ff6b5e; }
+  a { color:#ffe710; cursor:pointer; text-decoration:none; }
 </style>
 </head>
 <body>
 <div id="slotBlock" style="display:none">
   <div class="row"><label for="slot">Slot</label><select id="slot"></select></div>
-  <div class="row"><label for="show_name">Show name</label><input id="show_name" type="checkbox" style="width:auto"></div>
+  <div class="row"><label for="show_name">Show name</label><input id="show_name" type="checkbox"></div>
   <div class="hint">Nth stratagem read from the game, in order of appearance. Scan period, keys and timings are shared by all keys: set them on the Scan Now key.</div>
 </div>
 
 <div id="globalBlock" style="display:none">
 <h3>Scanning</h3>
-<div class="row"><label for="auto_scan">Auto scan</label><select id="auto_scan"><option value="true">On</option><option value="false">Off (Scan Now key only)</option></select></div>
-<div class="row"><label for="auto_menu_scan">Open the menu once at mission start</label><select id="auto_menu_scan"><option value="true">On</option><option value="false">Off</option></select></div>
+<div class="row"><label for="auto_scan">Auto scan</label><input id="auto_scan" type="checkbox"></div>
+<div class="row"><label for="auto_menu_scan">Open the menu at mission start</label><input id="auto_menu_scan" type="checkbox"></div>
 <div class="row"><label for="scan_period">Scan period (s)</label><input id="scan_period" type="number" min="0.1" max="60" step="0.05"></div>
 <div class="row"><label for="confirm_scans">Confirm after</label><input id="confirm_scans" type="number" min="1" max="10" step="1"></div>
 <div class="row"><label for="icon_scale">Icon scale</label><input id="icon_scale" type="number" min="0.5" max="2" step="0.05"></div>
 <div class="row"><label for="resolution">Game resolution</label><input id="resolution" list="resolutions" placeholder="auto"></div>
 <datalist id="resolutions"><option value="auto"><option value="1280x720"><option value="1600x900"><option value="1920x1080"><option value="2560x1440"><option value="3440x1440"><option value="3840x2160"></datalist>
 <div class="hint" id="detected"></div>
-<div class="hint">Confirm after: scans in a row a stratagem must be seen before it is added. Icon scale: only for a non-default HUD scale. Game resolution: auto measures the game window; type a size (2560x1440) only if the size found is wrong.</div>
+<div class="hint">Auto scan off: only the Scan Now key reads the game. Confirm after: scans in a row a stratagem must be seen before it is added. Icon scale: only for a non-default HUD scale. Game resolution: auto measures the game window; type a size (2560x1440) only if the size found is wrong.</div>
 
 <h3>Inputs (click, then press a key or mouse button)</h3>
 <div class="row"><label>Stratagem menu</label><input class="key" id="menu_key" readonly></div>
@@ -43,7 +45,7 @@
 <div class="row"><label>Left</label><input class="key" id="left" readonly></div>
 <div class="row"><label>Right</label><input class="key" id="right" readonly></div>
 <div class="row"><label>Throw (optional)</label><input class="key" id="throw_key" readonly placeholder="none"></div>
-<div class="hint">Backspace clears the throw key while capturing.</div>
+<div class="hint">Match your key bindings in the game. Backspace clears the throw key while capturing.</div>
 
 <h3>Timing (ms)</h3>
 <div class="row"><label for="menu_open_delay_ms">Menu open delay</label><input id="menu_open_delay_ms" type="number" min="0" max="2000" step="10"></div>
@@ -51,13 +53,18 @@
 <div class="row"><label for="key_hold_ms">Key hold</label><input id="key_hold_ms" type="number" min="5" max="500" step="5"></div>
 <div class="row"><label for="key_delay_ms">Delay between keys</label><input id="key_delay_ms" type="number" min="0" max="500" step="5"></div>
 
-<p><button id="save">Save</button><span id="msg"></span></p>
+<div id="msg"></div>
+<div class="hint">Changes are saved as you make them. <a id="help">How to use</a></div>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
+const HELP = 'https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/blob/main/docs/USAGE.md';
 const KEYS = ['menu_key', 'up', 'down', 'left', 'right', 'throw_key'];
 const NUMS = ['scan_period', 'confirm_scans', 'icon_scale', 'menu_open_delay_ms', 'scan_open_wait_ms', 'key_hold_ms', 'key_delay_ms'];
+const BOOLS = ['auto_scan', 'auto_menu_scan'];
+const LABELS = { scan_period: 'Scan period', confirm_scans: 'Confirm after', icon_scale: 'Icon scale', menu_open_delay_ms: 'Menu open delay',
+  scan_open_wait_ms: 'Scan menu wait', key_hold_ms: 'Key hold', key_delay_ms: 'Delay between keys' };
 // mirrors engine::Config::default in the plugin
 const DEFAULTS = { auto_scan: true, auto_menu_scan: true, scan_period: 0.15, confirm_scans: 2, icon_scale: 1, resolution: 'auto', menu_key: 'lctrl', menu_mode: 'hold',
   up: 'w', down: 's', left: 'a', right: 'd', throw_key: '', menu_open_delay_ms: 120, scan_open_wait_ms: 350, key_hold_ms: 35, key_delay_ms: 40 };
@@ -66,7 +73,7 @@ const MOUSE = { 0: 'mouse1', 1: 'mouse3', 2: 'mouse2', 3: 'mouse4', 4: 'mouse5' 
 const SPECIAL = { ControlLeft: 'lctrl', ControlRight: 'rctrl', ShiftLeft: 'lshift', ShiftRight: 'rshift', AltLeft: 'lalt', AltRight: 'ralt',
   ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Space: 'space', Tab: 'tab', Enter: 'enter', CapsLock: 'capslock', Escape: 'escape' };
 
-let ws, ctx, settings = {}, listening = null;
+let ws, ctx, settings = {}, listening = null, msgTimer = null;
 const sel = $('slot');
 for (let i = 1; i <= 12; i++) sel.add(new Option(String(i), String(i)));
 
@@ -84,7 +91,7 @@ for (const id of KEYS) {
   const p = document.createElement('select');
   for (const [v, t] of PICK) p.add(new Option(t, v));
   p.style.width = '110px';
-  p.onchange = () => { if (p.value) $(id).value = p.value; p.value = ''; };
+  p.onchange = () => { if (p.value) { $(id).value = p.value; saveGlobal(); } p.value = ''; };
   $(id).parentNode.appendChild(p);
 }
 function stopListening() { if (listening) { listening.classList.remove('listening'); listening = null; } }
@@ -94,11 +101,11 @@ for (const id of KEYS) {
   el.addEventListener('click', () => { stopListening(); listening = el; el.classList.add('listening'); el.value = 'press a key...'; });
   el.addEventListener('keydown', e => {
     e.preventDefault();
-    if (e.code === 'Backspace' && id === 'throw_key') { el.value = ''; stopListening(); return; }
+    if (e.code === 'Backspace' && id === 'throw_key') { el.value = ''; stopListening(); saveGlobal(); return; }
     const n = keyName(e);
-    if (n) { el.value = n; stopListening(); }
+    if (n) { el.value = n; stopListening(); saveGlobal(); }
   });
-  el.addEventListener('mousedown', e => { if (listening === el) { e.preventDefault(); el.value = MOUSE[e.button] || ''; stopListening(); } });
+  el.addEventListener('mousedown', e => { if (listening === el) { e.preventDefault(); el.value = MOUSE[e.button] || ''; stopListening(); saveGlobal(); } });
   el.addEventListener('contextmenu', e => { if (listening === el) e.preventDefault(); });
   el.addEventListener('blur', () => { if (listening === el) { stopListening(); showConfig(); } });
 }
@@ -106,25 +113,52 @@ for (const id of KEYS) {
 function showConfig() {
   const c = { ...DEFAULTS, ...global };
   for (const id of KEYS) $(id).value = c[id];
-  for (const id of NUMS) $(id).value = c[id];
+  for (const id of NUMS) { $(id).value = c[id]; $(id).classList.remove('bad'); }
+  for (const id of BOOLS) $(id).checked = !!c[id];
   $('resolution').value = c.resolution;
-  $('auto_scan').value = String(c.auto_scan);
-  $('auto_menu_scan').value = String(c.auto_menu_scan);
+  $('resolution').classList.remove('bad');
   $('menu_mode').value = c.menu_mode;
 }
 
-$('save').onclick = () => {
-  const body = { auto_scan: $('auto_scan').value === 'true', auto_menu_scan: $('auto_menu_scan').value === 'true', menu_mode: $('menu_mode').value };
-  for (const id of KEYS) body[id] = $(id).value;
-  for (const id of NUMS) body[id] = Number($(id).value);
-  // "2560 x 1440", "2560×1440" and an empty box all become what the plugin expects
+function say(text, error) {
+  clearTimeout(msgTimer);
+  $('msg').className = error ? 'err' : '';
+  $('msg').textContent = text;
+  if (!error) msgTimer = setTimeout(() => { $('msg').textContent = ''; }, 1500);
+}
+
+// "2560 x 1440", "2560×1440" and an empty box all become what the plugin expects; null when it is no size
+function resolutionValue() {
   const res = $('resolution').value.trim().toLowerCase().replace(/\s+/g, '').replace('×', 'x');
-  body.resolution = /^\d{3,5}x\d{3,5}$/.test(res) ? res : 'auto';
+  if (res === '' || res === 'auto') return 'auto';
+  const m = /^(\d+)x(\d+)$/.exec(res);
+  return m && +m[1] >= 640 && +m[1] <= 7680 && +m[2] >= 360 && +m[2] <= 4320 ? res : null;
+}
+
+// Every change is saved at once. A value out of range is not: its box turns red, the message says why, and the
+// last saved value stays in effect until it is corrected.
+function saveGlobal() {
+  const c = { ...DEFAULTS, ...global };
+  const body = { menu_mode: $('menu_mode').value };
+  for (const id of BOOLS) body[id] = $(id).checked;
+  for (const id of KEYS) body[id] = $(id).value;
+  const errors = [];
+  for (const id of NUMS) {
+    const el = $(id), v = Number(el.value), lo = Number(el.min), hi = Number(el.max);
+    const ok = el.value.trim() !== '' && Number.isFinite(v) && v >= lo && v <= hi;
+    el.classList.toggle('bad', !ok);
+    body[id] = ok ? v : c[id];
+    if (!ok) errors.push(`${LABELS[id]} must be between ${lo} and ${hi}.`);
+  }
+  const res = resolutionValue();
+  $('resolution').classList.toggle('bad', res === null);
+  body.resolution = res === null ? c.resolution : res;
+  if (res === null) errors.push('Game resolution: type a size such as 2560x1440, or auto.');
   global = body;
   ws.send(JSON.stringify({ event: 'setGlobalSettings', context: ctx, payload: body }));
-  $('msg').className = '';
-  $('msg').textContent = 'Saved';
-};
+  say(errors.length ? errors.join(' ') : 'Saved', errors.length > 0);
+}
+for (const id of [...NUMS, ...BOOLS, 'menu_mode', 'resolution']) $(id).addEventListener('change', saveGlobal);
 
 function saveSlot() {
   settings.slot = Number(sel.value);
@@ -133,6 +167,7 @@ function saveSlot() {
 }
 sel.onchange = saveSlot;
 $('show_name').onchange = saveSlot;
+$('help').onclick = () => ws.send(JSON.stringify({ event: 'openUrl', payload: { url: HELP } }));
 
 function connectElgatoStreamDeckSocket(port, uuid, registerEvent, info, actionInfo) {
   ctx = uuid;

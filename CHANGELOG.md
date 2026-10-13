@@ -4,6 +4,11 @@ What changed in each version of the plugin, newest first. The versions follow [s
 
 ## [Unreleased]
 
+### Changed
+
+- **New icons.** The plugin icon and the category icon are original drawings (four stratagem arrows) instead of the game's Reinforce icon, and the icons of the actions list are pure white on transparent, as the Elgato Marketplace asks.
+- **The settings save themselves.** The Scan key's panel has no Save button any more: each change is saved as you make it. On/off settings are checkboxes, and a value out of range is outlined in red with the reason, while the last good value stays in effect. A *How to use* link opens the guide.
+
 ## [0.3.0] - 2026-10-11
 
 ### Changed

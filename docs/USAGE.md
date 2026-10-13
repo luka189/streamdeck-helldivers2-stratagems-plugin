@@ -28,7 +28,7 @@ Each new Stratagem Slot key takes the first free slot. To change it, select the 
 
 ## Matching the game's controls
 
-The plugin calls a stratagem in the way you would: it opens the stratagem menu and presses the arrow keys of the code. So its inputs have to match your key bindings in the game. Select the Scan key, set them in its settings panel, and press **Save**:
+The plugin calls a stratagem in the way you would: it opens the stratagem menu and presses the arrow keys of the code. So its inputs have to match your key bindings in the game. Select the Scan key and set them in its settings panel; each change is saved as you make it, and a value out of range is outlined in red with the reason:
 
 - *Stratagem menu* is the key that opens the menu (Left Ctrl by default).
 - *Menu mode* must match the game's own option for the stratagem menu: *Hold while entering* if you hold the key, *Tap to toggle* if a tap opens the menu and the next one closes it.
@@ -78,8 +78,8 @@ They are on the Scan key's settings panel and apply to every key.
 
 | Setting | Default | What it does |
 |---|---|---|
-| Auto scan | On | Reads the screen every *Scan period*. Off: only the Scan key reads it |
-| Open the menu once at mission start | On | Reads the loadout when a mission starts, as described above |
+| Auto scan | On (checked) | Reads the screen every *Scan period*. Unchecked: only the Scan key reads it |
+| Open the menu at mission start | On (checked) | Reads the loadout when a mission starts, as described above |
 | Scan period | 0.15 s | Time between two reads (0.1 to 60 s). For a few seconds after you call a stratagem in, the plugin reads every 50 ms to catch the change |
 | Confirm after | 2 | How many reads in a row must see a stratagem before its key shows it (1 to 10) |
 | Icon scale | 1 | Only for a HUD scale other than the game's default (0.5 to 2) |
