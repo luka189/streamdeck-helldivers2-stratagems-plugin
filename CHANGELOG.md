@@ -4,6 +4,8 @@ What changed in each version of the plugin, newest first. The versions follow [s
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-13
+
 ### Changed
 
 - **Throwing is a setting of its own.** The *Throw* input is now only the key you throw with, which Stratagem Setup keys always use; the new *Throw after calling in* checkbox decides whether the slot keys throw too. A configuration with a throw key set keeps throwing, as before.
@@ -73,7 +75,8 @@ The first version.
 - **A Clear Stratagem Slots key** that empties every slot until the next scan.
 - **Settings on the Scan key**, shared by every key: the scan period, the inputs, the timings, and the game's resolution for when its window can't be measured (the panel shows the size the plugin found).
 
-[Unreleased]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.5.1...dev
+[Unreleased]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.5.2...dev
+[0.5.2]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.3.0...v0.4.0
