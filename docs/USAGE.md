@@ -6,13 +6,14 @@ This page assumes the plugin is installed ([INSTALLATION.md](INSTALLATION.md)). 
 
 ## Setting up the keys
 
-In the Stream Deck app, the plugin adds a category named **Helldivers 2 Stratagems** with three actions. Drag them onto a profile:
+In the Stream Deck app, the plugin adds a category named **Helldivers 2 Stratagems** with four actions. Drag them onto a profile:
 
 | Action | What it is for |
 |---|---|
 | Scan Now | The Scan key. Its animated radar shows whether the game is being read, and pressing it reads the stratagem menu right away. Its settings panel holds the settings of the whole plugin. |
 | Stratagem Slot | One stratagem. Add one per stratagem you want on the deck. |
 | Clear Stratagem Slots | Empties every slot. They fill again on the next scan. |
+| Stratagem Setup | Two to four of your loadout stratagems on one key: a press calls them in one after the other and throws each. See [Stratagem Setup](#stratagem-setup). |
 
 A slot shows the stratagem at the same position in the game's stratagem menu. The menu always starts with Reinforce, SOS Beacon and Resupply, so:
 
@@ -33,9 +34,10 @@ The plugin calls a stratagem in the way you would: it opens the stratagem menu a
 - *Stratagem menu* is the key that opens the menu (Left Ctrl by default).
 - *Menu mode* must match the game's own option for the stratagem menu: *Hold while entering* if you hold the key, *Tap to toggle* if a tap opens the menu and the next one closes it.
 - *Up*, *Down*, *Left* and *Right* are the keys of the codes (W, S, A and D by default; the arrow keys work as well if you bound them).
-- *Throw* is optional. When it is set, the plugin presses it after the code, which throws the stratagem straight away.
+- *Throw* is the key or mouse button you throw a stratagem with (the left mouse button by default in the game). Stratagem Setup keys need it, since they throw each stratagem before calling the next.
+- *Throw after calling in* makes the slot keys throw too, right after the code (off by default). A configuration from before 0.5.2 with a throw key set has it on, since setting the key was what made the keys throw then.
 
-To set an input, click its box and press the key or mouse button, or choose one from the list next to it. Backspace clears the throw key.
+To set an input, click its box, then press the key or mouse button, anywhere in the panel. Backspace clears the throw key.
 
 ## Playing
 
@@ -46,6 +48,14 @@ Before a mission, the plugin watches for your card on the loadout screen, the on
 When a mission starts, the plugin opens the stratagem menu to read the loadout, even when the loadout screen already gave it: the menu shows what each stratagem's state is, and settles any slot the loadout screen got wrong. The HUD shows up before you can open the menu (in the hellpod, while landing), so the plugin checks whether the menu really opened, and tries again until it does, for about twenty seconds. After the loadout screen, it presses the menu key as soon as the HUD shows Reinforce and tries every second; otherwise, for instance when the plugin starts during a mission, it waits two seconds first and tries every two seconds. If you open the menu yourself in the meantime, that counts too. After that, it follows what the HUD shows with the menu closed. Opening the menu yourself, or pressing the Scan key, reads everything again.
 
 Press a slot key to call its stratagem in. The game has to be the window in front; if it isn't, the key shows a warning triangle and nothing is typed into the other window. The plugin also refuses a stratagem the game would refuse (cooling down, unavailable or already on its way), except in the very last moment of a cooldown: the last 0.3 s when it read the game's timer, the last 1.5 s when it had to estimate the end.
+
+### Stratagem Setup
+
+A Stratagem Setup key calls several stratagems in with one press, such as a sentry and the supply pack that goes with it. In its settings, pick two to four stratagems of your loadout, numbered in the order you chose them: *Loadout 1* is the first. A new key takes the first two. The plugin finds them in the stratagem menu wherever they are: a mission that starts with a stratagem of its own, such as Call In Super Destroyer, moves your loadout along by one slot, and the Setup key follows it, since the stratagems the game gives are all mission stratagems that no player chooses.
+
+Pressing it calls each slot's stratagem in, in the order chosen, and throws it before the next, since you can only hold one at a time. So it needs the *Throw* input, set on the Scan key; without it, the key shows a warning triangle and nothing is typed. A stratagem that isn't ready (cooling down, unavailable, or already on its way) is skipped, and the others are called in. Between two stratagems, the plugin waits a second after the throw, so that the throw has ended when it opens the menu again.
+
+The key shows its stratagems' icons side by side for two, and in a square for three or four, each with its own cooldown, like the slot keys. Until the plugin has read your loadout, each place shows the signal icon of a slot not read yet.
 
 ### What a slot key shows
 
@@ -86,7 +96,7 @@ They are on the Scan key's settings panel and apply to every key.
 | Confirm after | 2 | How many reads in a row must see a stratagem before its key shows it (1 to 10) |
 | Icon scale | 1 | Only for a HUD scale other than the game's default (0.5 to 2) |
 | Game resolution | auto | The game's size in pixels. *auto* measures the game's window, and the line under the box shows what was found. Type a size such as `2560x1440` only when that is wrong: when Windows hides the game's window from the plugin, the plugin falls back to the main screen's size, which differs from the game's if the game doesn't run at the screen's resolution |
-| Stratagem menu, Menu mode, Up, Down, Left, Right, Throw | Left Ctrl, Hold, W, S, A, D, none | See [Matching the game's controls](#matching-the-games-controls) |
+| Stratagem menu, Menu mode, Up, Down, Left, Right, Throw, Throw after calling in | Left Ctrl, Hold, W, S, A, D, none, off | See [Matching the game's controls](#matching-the-games-controls) |
 | Menu open delay | 120 ms | Wait after opening the menu, before the first arrow |
 | Scan menu wait | 350 ms | Added to *Menu open delay*: the longest the plugin waits for a menu it opened to show. It reads the menu as soon as it has settled, and closes it right away |
 | Key hold | 35 ms | How long each key is held down |

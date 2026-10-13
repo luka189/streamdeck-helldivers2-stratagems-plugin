@@ -84,6 +84,8 @@ impl StatusReader {
             ("word_ready", Status::Ready, None, None, WORD_X),
             ("word_cooldown", Status::Cooldown, None, Some(TIMER_AFTER_COOLDOWN), WORD_X),
             ("word_unavailable", Status::Unavailable, None, None, WORD_X),
+            // "Super Destroyer Unavailable": the Super Destroyer is away, so its stratagems can't be called
+            ("word_super_destroyer", Status::Unavailable, None, None, WORD_X),
             ("word_impact", Status::Active, None, None, WORD_X),
             ("word_inbound", Status::Active, None, Some(TIMER_AFTER_INBOUND), WORD_X),
             ("word_activating", Status::Active, None, None, WORD_X),
@@ -291,8 +293,9 @@ mod tests {
     #[test]
     fn loads_every_template() {
         let r = reader();
-        assert_eq!(r.raw.len(), 20);
+        assert_eq!(r.raw.len(), 21);
         assert_eq!(r.raw.iter().filter(|t| t.dir.is_some()).count(), 4, "four arrows");
+        assert_eq!(r.raw.iter().filter(|t| t.status == Status::Unavailable).count(), 2, "unavailable, super destroyer unavailable");
         assert_eq!(r.raw.iter().filter(|t| t.status == Status::Active).count(), 3, "impact, inbound and activating");
         assert_eq!(r.raw.iter().filter_map(|t| t.digit).collect::<Vec<_>>(), (0..10).collect::<Vec<_>>(), "ten digits");
         assert_eq!(r.raw.iter().filter(|t| t.timer.is_some()).count(), 2, "cooldown and inbound have a timer");

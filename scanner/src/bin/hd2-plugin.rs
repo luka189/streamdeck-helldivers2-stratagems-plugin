@@ -22,11 +22,12 @@ use hd_scanner::capture::{Source, set_dpi_aware};
 use hd_scanner::data::Data;
 use hd_scanner::engine::{self, Config, Engine, GameState, SlotView, Status};
 use hd_scanner::img::Img;
-use hd_scanner::matcher::Matcher;
+use hd_scanner::matcher::{ICON_SIZE, Kind, Matcher};
 
 const SLOT: &str = "com.xiaodoudou.helldivers2-stratagems.slot";
 const SCAN: &str = "com.xiaodoudou.helldivers2-stratagems.rescan";
 const CLEAR: &str = "com.xiaodoudou.helldivers2-stratagems.clear";
+const SETUP: &str = "com.xiaodoudou.helldivers2-stratagems.setup";
 // set at runtime too: Stream Deck only reloads manifest images when it restarts
 const CLEAR_SVG: &str = include_str!("../../../tools/icon_src/clear.svg");
 const STEAM_LAUNCH: &str = "steam://rungameid/553850"; // Helldivers 2's Steam app id
@@ -38,7 +39,28 @@ struct Key {
     action: String,
     slot: usize,
     show_name: bool,
+    loadout: Vec<usize>, // a Stratagem Setup key's loadout stratagems (0: the first one chosen), in calling order
 }
+
+// A Stratagem Setup key calls SETUP_MIN to LOADOUT_SIZE of the player's loadout stratagems, picked by their place in the
+// loadout rather than by menu slot (see Plugin::loadout_slot); a new one takes SETUP_DEFAULT (1-based: the first two).
+// Between two of its stratagems it waits SETUP_GAP after the throw, so that the throw has ended when the menu opens again.
+const SETUP_MIN: usize = 2;
+const LOADOUT_SIZE: usize = 4;
+const SETUP_DEFAULT: [usize; 2] = [1, 2];
+const SETUP_GAP: Duration = Duration::from_millis(1000);
+const SLOT_MAX: usize = 12; // the slots the settings panels offer
+
+/// Where one of the player's loadout stratagems is in the menu, as far as it is known.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Place {
+    At(usize), // this menu slot
+    Waiting,   // not known yet: the menu has not been read up to it
+    Missing,   // the loadout has fewer stratagems
+}
+
+/// What a key shows for one slot, as the picture cache knows it: stratagem, status, fill step, badge.
+type IconKey = (usize, Status, u8, u64);
 
 enum Event {
     Loadout(Loadout),
@@ -48,16 +70,22 @@ enum Event {
     Done { context: String, result: Result<(), String> },
 }
 
+#[derive(Clone)]
 struct Stratagem {
     name: String,
     code: String,
-    png: Vec<u8>, // the picture its key shows: an 8-bit RGBA PNG, ICON_SIZE square
+    png: Vec<u8>,  // the picture its key shows: an 8-bit RGBA PNG, ICON_SIZE square
+    mission: bool, // given by the game (gold: Reinforce, a mission's own...), never one a player chooses
 }
 
 /// The matcher's catalog with the picture each stratagem's key shows: its icon as the game draws it, made from the
 /// game's own texture: the very icon the matcher compares the screen with.
 fn catalog(m: &Matcher) -> Vec<Stratagem> {
-    m.catalog.iter().enumerate().map(|(i, s)| Stratagem { name: s.name.clone(), code: s.code.clone(), png: png_rgba(m.icon(i)) }).collect()
+    m.catalog
+        .iter()
+        .enumerate()
+        .map(|(i, s)| Stratagem { name: s.name.clone(), code: s.code.clone(), png: png_rgba(m.icon(i)), mission: s.kind == Kind::Mission })
+        .collect()
 }
 
 /// An opaque 8-bit RGBA PNG of `img`.
@@ -290,6 +318,91 @@ fn icon_png<'a>(png: &'a [u8], view: &SlotView) -> Option<Cow<'a, [u8]>> {
     Some(Cow::Owned(out))
 }
 
+/// What one place of a Stratagem Setup key shows: what its slot's own key would show.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum Cell {
+    Icon(IconKey),        // the stratagem, as its slot key draws it
+    Waiting(usize, bool), // the slot not read yet: the signal of `acquiring`, at this step, greyed in standby
+    Empty,                // nothing in that slot this mission: black
+}
+
+/// "#rrggbb" as RGB values.
+fn rgb(hex: &str) -> [f32; 3] {
+    std::array::from_fn(|c| u8::from_str_radix(&hex[1 + 2 * c..3 + 2 * c], 16).map_or(0.0, f32::from))
+}
+
+/// The picture of `acquiring` drawn `size` pixels square (from its 144-unit design, sampling each pixel 3x3 times),
+/// for a place of a Stratagem Setup key.
+fn acquiring_img(step: usize, idle: bool, size: usize) -> Img {
+    let (frame, frame_opacity, inner, ink) =
+        if idle { (rgb(IDLE_FRAME), 1.0, rgb(IDLE_INNER), rgb(IDLE_INK)) } else { (rgb("#c9b269"), 0.45, rgb("#26241a"), rgb("#ffffee")) };
+    let step = if idle { 3 } else { step };
+    let mix = |under: [f32; 3], over: [f32; 3], a: f32| -> [f32; 3] { std::array::from_fn(|c| under[c] * (1.0 - a) + over[c] * a) };
+    let at = |x: f64, y: f64| -> [f32; 3] {
+        let mut p = if (11.0..133.0).contains(&x) && (11.0..133.0).contains(&y) { inner } else { mix([0.0; 3], frame, frame_opacity) };
+        let (dx, dy) = (x - 72.0, y - 96.0);
+        let dist = dx.hypot(dy);
+        for (i, r) in [20.0, 36.0, 52.0].into_iter().enumerate() {
+            // a quarter circle over the dot, from 45 degrees left of the top to 45 degrees right, with round ends
+            let d = r * std::f64::consts::FRAC_1_SQRT_2;
+            let on_arc = -dy >= dx.abs() && (dist - r).abs() <= 3.5;
+            let on_end = [(-d, -d), (d, -d)].iter().any(|&(ex, ey)| (dx - ex).hypot(dy - ey) <= 3.5);
+            if on_arc || on_end {
+                p = mix(p, ink, if i < step { 1.0 } else { 0.2 });
+            }
+        }
+        if dist <= 7.0 { ink } else { p }
+    };
+    let mut img = Img::new(size, size);
+    let unit = 144.0 / size as f64;
+    for y in 0..size {
+        for x in 0..size {
+            let mut sum = [0.0f32; 3];
+            for (i, j) in (0..3).flat_map(|i| (0..3).map(move |j| (i, j))) {
+                let p = at((x as f64 + (i as f64 + 0.5) / 3.0) * unit, (y as f64 + (j as f64 + 0.5) / 3.0) * unit);
+                (0..3).for_each(|c| sum[c] += p[c] / 9.0);
+            }
+            img.px[(y * size + x) * 3..(y * size + x) * 3 + 3].copy_from_slice(&sum);
+        }
+    }
+    img
+}
+
+/// A Stratagem Setup key's picture: its slots as their own keys show them, side by side for two, in a square of four
+/// places for three or four (the third centred under the first two). `cells` pairs each place with its stratagem's
+/// picture as its slot key draws it, when it shows one.
+fn setup_png(cells: &[(Cell, Option<Vec<u8>>)]) -> Vec<u8> {
+    const CELL: usize = 68;
+    let places: &[(usize, usize)] = match cells.len() {
+        0..=2 => &[(2, 38), (74, 38)],
+        3 => &[(2, 2), (74, 2), (38, 74)],
+        _ => &[(2, 2), (74, 2), (2, 74), (74, 74)],
+    };
+    let mut key = Img::new(ICON_SIZE, ICON_SIZE);
+    for (&(x, y), (cell, png)) in places.iter().zip(cells) {
+        let cell = match cell {
+            Cell::Icon(_) => png
+                .as_deref()
+                .and_then(|b| Img::decode_png(b).ok())
+                .map(|i| i.resize_area(CELL, CELL))
+                .unwrap_or_else(|| Img::new(CELL, CELL)),
+            &Cell::Waiting(step, idle) => acquiring_img(step, idle, CELL),
+            Cell::Empty => Img::new(CELL, CELL),
+        };
+        for row in 0..CELL {
+            let to = ((y + row) * ICON_SIZE + x) * 3;
+            key.px[to..to + CELL * 3].copy_from_slice(&cell.px[row * CELL * 3..(row + 1) * CELL * 3]);
+        }
+    }
+    png_rgba(&key)
+}
+
+/// Whether a press on a slot showing `v` is let through: not while cooling down (unless close enough to its end,
+/// see near_ready), unavailable, or already on its way.
+fn callable(v: &SlotView, now: Instant) -> bool {
+    !matches!(v.status, Status::Cooldown | Status::Unavailable | Status::Active) || near_ready(v, now)
+}
+
 const BADGE_BG: [f32; 3] = [232.0, 229.0, 206.0];
 const BADGE_INK: [f32; 3] = [61.0, 60.0, 39.0];
 
@@ -363,8 +476,9 @@ struct Plugin {
     keys: HashMap<String, Key>,
     loadout: Loadout,
     catalog: Vec<Stratagem>,
-    icons: HashMap<(usize, Status, u8, u64), String>,
-    frame: usize, // animation tick, every ANIM
+    icons: HashMap<IconKey, String>,
+    setups: HashMap<Vec<Cell>, String>, // Stratagem Setup pictures, by what their places show
+    frame: usize,                       // animation tick, every ANIM
     state: GameState,
     standby: bool, // the game is not running
 }
@@ -448,17 +562,42 @@ impl Plugin {
             };
             return vec![set_image(context, radar(angle, ink))];
         }
+        if key.action == SETUP {
+            let places: Vec<Place> = key.loadout.iter().map(|&k| self.loadout_slot(k)).collect();
+            let views: Vec<Option<SlotView>> =
+                places.iter().map(|p| if let Place::At(s) = *p { self.loadout.get(s).cloned().flatten() } else { None }).collect();
+            let id: Vec<Cell> = places
+                .iter()
+                .zip(&views)
+                .map(|(p, v)| match (p, v) {
+                    (_, Some(v)) => Cell::Icon(self.icon_key(v)),
+                    (Place::Missing, None) => Cell::Empty,
+                    _ => Cell::Waiting(if self.standby { 3 } else { self.frame / 3 % 4 }, self.standby),
+                })
+                .collect();
+            if let Some(image) = self.setups.get(&id) {
+                return vec![set_image(context, image.clone())];
+            }
+            let cells: Vec<(Cell, Option<Vec<u8>>)> = id
+                .iter()
+                .zip(&views)
+                .map(|(cell, v)| (cell.clone(), v.as_ref().and_then(|v| icon_png(&self.catalog[v.index].png, v).map(Cow::into_owned))))
+                .collect();
+            let image = data_url("image/png", &setup_png(&cells));
+            self.setups.insert(id, image.clone());
+            return vec![set_image(context, image)];
+        }
         if key.action != SLOT {
             return vec![];
         }
         let (slot, show_name) = (key.slot, key.show_name);
         match self.loadout.get(slot).cloned().flatten() {
             Some(v) => {
+                let id = self.icon_key(&v);
                 let png = &self.catalog[v.index].png;
-                let step = (v.fill * 72.0).round() as u8;
                 let icon = self
                     .icons
-                    .entry((v.index, v.status, step, v.badge.as_ref().map_or(0, |b| b.hash)))
+                    .entry(id)
                     .or_insert_with(|| icon_png(png, &v).map(|b| data_url("image/png", &b)).unwrap_or_else(blank))
                     .clone();
                 let title = if show_name { self.catalog[v.index].name.as_str() } else { "" };
@@ -471,13 +610,35 @@ impl Plugin {
         }
     }
 
+    /// Where the player's loadout stratagem `k` (0: the first one chosen) is in the menu: the k-th slot holding a
+    /// stratagem a player chooses, counted in menu order. Reinforce, SOS Beacon, Resupply and a mission's own stratagems
+    /// are all mission stratagems, which no player chooses, so a mission that starts with one of its own moves the
+    /// loadout along and this follows it. Waiting while a slot before it, or the menu itself, has not been read yet.
+    fn loadout_slot(&self, k: usize) -> Place {
+        let mut n = 0;
+        for (s, v) in self.loadout.iter().enumerate() {
+            match v {
+                None => return Place::Waiting,
+                Some(v) if self.catalog[v.index].mission => {}
+                Some(_) if n == k => return Place::At(s),
+                Some(_) => n += 1,
+            }
+        }
+        // the open menu lists every slot; before it has been read (the closed HUD shows Reinforce only), nothing is known
+        if self.loadout.len() < MENU_OPEN_ROWS { Place::Waiting } else { Place::Missing }
+    }
+
+    fn icon_key(&self, v: &SlotView) -> IconKey {
+        (v.index, v.status, (v.fill * 72.0).round() as u8, v.badge.as_ref().map_or(0, |b| b.hash))
+    }
+
     fn paint_where(&mut self, keep: impl Fn(&Key) -> bool) -> Vec<Out> {
         let contexts: Vec<String> = self.keys.iter().filter(|(_, k)| keep(k)).map(|(c, _)| c.clone()).collect();
         contexts.iter().flat_map(|c| self.paint(c)).collect()
     }
 
     fn paint_slots(&mut self) -> Vec<Out> {
-        self.paint_where(|k| k.action == SLOT)
+        self.paint_where(|k| k.action == SLOT || k.action == SETUP)
     }
 
     /// Settings of a key; a new slot key takes the first free slot and saves it.
@@ -498,7 +659,24 @@ impl Plugin {
             None => 0,
         };
         let show_name = settings.get("show_name").and_then(Value::as_bool).unwrap_or(false);
-        self.keys.insert(context.into(), Key { action: action.into(), slot, show_name });
+        let mut loadout = Vec::new();
+        if action == SETUP {
+            // 1-based in the settings, each once, SETUP_MIN to LOADOUT_SIZE of them; anything else gets the default
+            let given = settings.get("loadout").and_then(Value::as_array).cloned().unwrap_or_default();
+            for n in given.iter().filter_map(Value::as_u64).map(|n| n as usize).filter(|n| (1..=LOADOUT_SIZE).contains(n)) {
+                if !loadout.contains(&(n - 1)) {
+                    loadout.push(n - 1);
+                }
+            }
+            if loadout.len() < SETUP_MIN {
+                loadout = SETUP_DEFAULT.iter().map(|n| n - 1).collect();
+                let mut saved = settings.as_object().cloned().unwrap_or_default();
+                saved.remove("slots"); // menu slots, as a build before 0.5.2 saved them
+                saved.insert("loadout".into(), json!(SETUP_DEFAULT));
+                out.push(MessageOut::SetSettings { context: context.into(), payload: Value::Object(saved) });
+            }
+        }
+        self.keys.insert(context.into(), Key { action: action.into(), slot, show_name, loadout });
         out.extend(self.paint(context));
         out
     }
@@ -743,6 +921,7 @@ async fn main() {
         loadout: Vec::new(),
         catalog,
         icons: HashMap::new(),
+        setups: HashMap::new(),
         frame: 0,
         state: GameState::Missing,
         standby: false,
@@ -793,10 +972,7 @@ async fn main() {
                                     // nothing there, or the game would refuse it right now
                                     None => vec![MessageOut::ShowAlert { context }],
                                     // a cooldown about to end lets the press through (see NEAR_READY)
-                                    Some(v)
-                                        if matches!(v.status, Status::Cooldown | Status::Unavailable | Status::Active)
-                                            && !near_ready(&v, Instant::now()) =>
-                                    {
+                                    Some(v) if !callable(&v, Instant::now()) => {
                                         let left = v.ready.map_or(String::new(), |r| {
                                             let secs = r.at.saturating_duration_since(Instant::now()).as_secs_f32();
                                             format!(", {secs:.1} s left by {}", if r.timed { "the timer" } else { "the fill" })
@@ -809,7 +985,7 @@ async fn main() {
                                         log(format!("calling {} ({code})", p.catalog[v.index].name));
                                         let (engine, wake) = (engine.clone(), wake.clone());
                                         tokio::task::spawn_blocking(move || {
-                                            let result = engine::fire(&code, &c);
+                                            let result = engine::fire(&code, &c, c.auto_throw);
                                             if result.is_ok() {
                                                 let mut e = engine.lock().unwrap_or_else(|p| p.into_inner());
                                                 if e.mark_called(v.index) {
@@ -822,6 +998,51 @@ async fn main() {
                                         });
                                         vec![]
                                     }
+                                }
+                            }
+                            // call every one of its loadout stratagems that is ready, in order, throwing each before the
+                            // next; the others are skipped
+                            SETUP => {
+                                let picked = p.keys.get(&context).map(|k| k.loadout.clone()).unwrap_or_default();
+                                let now = Instant::now();
+                                let calls: Vec<(usize, String, String)> = picked
+                                    .iter()
+                                    .filter_map(|&k| if let Place::At(s) = p.loadout_slot(k) { p.loadout.get(s).cloned().flatten() } else { None })
+                                    .filter(|v| callable(v, now))
+                                    .map(|v| (v.index, p.catalog[v.index].code.clone(), p.catalog[v.index].name.clone()))
+                                    .collect();
+                                if c.throw_key.is_empty() {
+                                    log("stratagem setup refused: it throws each stratagem, so it needs the throw key (set it on the Scan key)");
+                                    vec![MessageOut::ShowAlert { context }]
+                                } else if calls.is_empty() {
+                                    log("stratagem setup refused: none of its stratagems is ready");
+                                    vec![MessageOut::ShowAlert { context }]
+                                } else {
+                                    log(format!(
+                                        "stratagem setup: calling {}",
+                                        calls.iter().map(|(_, code, name)| format!("{name} ({code})")).collect::<Vec<_>>().join(", then ")
+                                    ));
+                                    let (engine, wake) = (engine.clone(), wake.clone());
+                                    tokio::task::spawn_blocking(move || {
+                                        let mut result = Ok(());
+                                        for (k, (index, code, _)) in calls.iter().enumerate() {
+                                            if k > 0 {
+                                                std::thread::sleep(SETUP_GAP);
+                                            }
+                                            result = engine::fire(code, &c, true);
+                                            if result.is_err() {
+                                                break;
+                                            }
+                                            let mut e = engine.lock().unwrap_or_else(|p| p.into_inner());
+                                            if e.mark_called(*index) {
+                                                let _ = tx.send(Event::Loadout(e.loadout()));
+                                            }
+                                            drop(e);
+                                            wake.burst();
+                                        }
+                                        let _ = tx.send(Event::Done { context, result });
+                                    });
+                                    vec![]
                                 }
                             }
                             // the game is not running: start it through Steam; scanning resumes once it runs.
@@ -906,10 +1127,12 @@ async fn main() {
                 // acquiring tiles step every 600 ms, the radar every 200 ms; nothing moves in standby
                 let step_acquiring = p.frame.is_multiple_of(3) && !p.standby;
                 let (state, standby) = (p.state, p.standby);
-                let acquiring: Vec<usize> = p.keys.values().filter(|k| k.action == SLOT && p.is_acquiring(k.slot)).map(|k| k.slot).collect();
+                let acquiring: Vec<usize> = (0..SLOT_MAX).filter(|&s| p.is_acquiring(s)).collect();
+                let waiting: Vec<usize> = (0..LOADOUT_SIZE).filter(|&k| p.loadout_slot(k) == Place::Waiting).collect();
                 p.paint_where(|k| {
                     (k.action == SCAN && !standby && state != GameState::Missing)
                         || (step_acquiring && k.action == SLOT && acquiring.contains(&k.slot))
+                        || (step_acquiring && k.action == SETUP && k.loadout.iter().any(|n| waiting.contains(n)))
                 })
             }
         };
@@ -931,7 +1154,6 @@ mod tests {
     use super::*;
     use hd_scanner::engine::Badge;
     use hd_scanner::img::Img;
-    use hd_scanner::matcher::ICON_SIZE;
 
     /// Reinforce's key picture, as the plugin makes it.
     fn icon() -> Vec<u8> {
@@ -948,8 +1170,17 @@ mod tests {
     }
 
     fn plugin(loadout: Loadout) -> Plugin {
-        let catalog = vec![Stratagem { name: "Reinforce".into(), code: "UDRLU".into(), png: icon() }];
-        Plugin { keys: HashMap::new(), loadout, catalog, icons: HashMap::new(), frame: 0, state: GameState::Missing, standby: false }
+        let catalog = vec![Stratagem { name: "Reinforce".into(), code: "UDRLU".into(), png: icon(), mission: true }];
+        Plugin {
+            keys: HashMap::new(),
+            loadout,
+            catalog,
+            icons: HashMap::new(),
+            setups: HashMap::new(),
+            frame: 0,
+            state: GameState::Missing,
+            standby: false,
+        }
     }
 
     /// The SVG text inside a data URL.
@@ -1205,6 +1436,132 @@ mod tests {
         }
     }
 
+    /// A plugin with the whole catalog and the named stratagems in the menu, all ready; "" is a slot not read yet.
+    fn plugin_with(menu: &[&str]) -> Plugin {
+        static CATALOG: OnceLock<Vec<Stratagem>> = OnceLock::new();
+        let all = CATALOG.get_or_init(|| catalog(&Matcher::load(&Data::Embedded).expect("built in"))).clone();
+        let index = |name: &str| all.iter().position(|s| s.name == name).unwrap_or_else(|| panic!("no {name}"));
+        let loadout = menu
+            .iter()
+            .map(|&n| (!n.is_empty()).then(|| SlotView { index: index(n), status: Status::Ready, fill: 0.0, badge: None, ready: None }))
+            .collect();
+        let mut p = plugin(loadout);
+        p.catalog = all;
+        p
+    }
+
+    const MENU: [&str; 7] =
+        ["Reinforce", "SoS Beacon", "Resupply", "Orbital Laser", "LAS-98 Laser Cannon", "LIFT-182 Warp Pack", "M-102 Gunner FRV"];
+
+    #[test]
+    fn a_stratagem_setup_key_keeps_two_to_four_loadout_stratagems_and_saves_a_default() {
+        let mut p = plugin(vec![]);
+        let out = p.register(SETUP, "s", &json!({ "slots": [4, 5] }));
+        match &out[0] {
+            MessageOut::SetSettings { context, payload } => {
+                assert_eq!((context.as_str(), payload), ("s", &json!({ "loadout": [1, 2] })), "menu slots of an earlier build go")
+            }
+            other => panic!("expected SetSettings, got {other:?}"),
+        }
+        assert_eq!(p.keys["s"].loadout, [0, 1]);
+        // 1-based, each once, 1 to 4 only; a saved choice is not saved again
+        let out = p.register(SETUP, "t", &json!({ "loadout": [3, 1, 3, 0, 5, 4, 2] }));
+        assert!(out.iter().all(|m| !matches!(m, MessageOut::SetSettings { .. })));
+        assert_eq!(p.keys["t"].loadout, [2, 0, 3, 1]);
+        // fewer than two: the default
+        p.register(SETUP, "u", &json!({ "loadout": [4] }));
+        assert_eq!(p.keys["u"].loadout, [0, 1]);
+    }
+
+    #[test]
+    fn the_loadout_is_found_past_the_stratagems_the_game_gives() {
+        let p = plugin_with(&MENU);
+        assert_eq!((0..4).map(|k| p.loadout_slot(k)).collect::<Vec<_>>(), [Place::At(3), Place::At(4), Place::At(5), Place::At(6)]);
+        // a mission starting with a stratagem of its own moves the loadout along by one
+        let shifted = ["Reinforce", "SoS Beacon", "Resupply", "Call In Super Destroyer", "Orbital Laser", "LAS-98 Laser Cannon"];
+        let p = plugin_with(&shifted);
+        assert_eq!((p.loadout_slot(0), p.loadout_slot(1)), (Place::At(4), Place::At(5)));
+        assert_eq!(p.loadout_slot(2), Place::Missing, "a loadout of two");
+        // two of the mission's own before the loadout, and one handed out later after it: the loadout is found all the same
+        let two = [
+            "Reinforce",
+            "SoS Beacon",
+            "Resupply",
+            "Call In Super Destroyer",
+            "Orbital Illumination Flare",
+            "Orbital Laser",
+            "LAS-98 Laser Cannon",
+            "LIFT-182 Warp Pack",
+            "M-102 Gunner FRV",
+            "NUX-223 Hellbomb",
+        ];
+        let p = plugin_with(&two);
+        assert_eq!(
+            (0..5).map(|k| p.loadout_slot(k)).collect::<Vec<_>>(),
+            [Place::At(5), Place::At(6), Place::At(7), Place::At(8), Place::Missing]
+        );
+        // not read yet: before the menu, or a slot before it unread
+        assert_eq!(plugin_with(&["Reinforce"]).loadout_slot(0), Place::Waiting);
+        assert_eq!(plugin_with(&["Reinforce", "SoS Beacon", "", "Orbital Laser"]).loadout_slot(0), Place::Waiting);
+        assert_eq!(plugin_with(&["Reinforce", "SoS Beacon", "Resupply", "Orbital Laser", ""]).loadout_slot(0), Place::At(3));
+    }
+
+    #[test]
+    fn a_stratagem_setup_key_shows_its_stratagems_side_by_side_or_in_a_square() {
+        let shifted = ["Reinforce", "SoS Beacon", "Resupply", "Call In Super Destroyer", "Orbital Laser", "LAS-98 Laser Cannon"];
+        let mut p = plugin_with(&shifted);
+        p.register(SETUP, "two", &json!({ "loadout": [1, 2] }));
+        p.register(SETUP, "three", &json!({ "loadout": [2, 1, 3] }));
+        let picture = |p: &mut Plugin, key: &str| {
+            let out = p.paint(key);
+            let png = B64.decode(image_of(&out[0]).strip_prefix("data:image/png;base64,").expect("a PNG")).unwrap();
+            let (w, h, px) = decode(&png);
+            assert_eq!((w, h), (144, 144), "{key}");
+            move |x: usize, y: usize| -> [u8; 3] { std::array::from_fn(|c| px[(y * w + x) * 4 + c]) }
+        };
+        // two side by side across the middle: the Orbital Laser (red frame), then the Laser Cannon (blue frame)
+        let at = picture(&mut p, "two");
+        assert!(at(4, 72)[0] > 150 && at(4, 72)[2] < 120, "red: {:?}", at(4, 72));
+        assert!(at(76, 72)[2] > 150 && at(76, 72)[0] < 120, "blue: {:?}", at(76, 72));
+        // three in a square, two on top: the Laser Cannon, the Orbital Laser, and a third the loadout doesn't have
+        let at = picture(&mut p, "three");
+        assert!(at(4, 36)[2] > 150 && at(76, 36)[0] > 150, "{:?} {:?}", at(4, 36), at(76, 36));
+        assert_eq!(at(72, 108), [0, 0, 0], "no third stratagem: black");
+        // nothing read yet: the waiting signal in each place, as on the slot keys
+        let mut p = plugin_with(&[]);
+        p.register(SETUP, "two", &json!({ "loadout": [1, 2] }));
+        let at = picture(&mut p, "two");
+        assert_eq!((at(3, 39), at(75, 39)), ([90, 80, 47], [90, 80, 47]), "the signal's frame, gold at 45%");
+        assert_eq!(at(74 + 34, 38 + 45), [255, 255, 238], "its dot");
+        assert_eq!(p.setups.len(), 1, "cached");
+        p.paint("two");
+        assert_eq!(p.setups.len(), 1);
+    }
+
+    #[test]
+    fn the_waiting_signal_is_drawn_like_the_slot_keys_one() {
+        let img = acquiring_img(1, false, 144);
+        let at = |x: usize, y: usize| -> [u8; 3] { std::array::from_fn(|c| img.px[(y * 144 + x) * 3 + c].round() as u8) };
+        assert_eq!(at(2, 2), [90, 80, 47], "frame: #c9b269 at 45% on black");
+        assert_eq!(at(30, 30), [38, 36, 26], "inside: #26241a");
+        assert_eq!(at(72, 96), [255, 255, 238], "the dot");
+        assert_eq!(at(72, 76), [255, 255, 238], "the first arc, lit at step 1");
+        assert!(at(72, 60)[0] < 100, "the second arc, dim at step 1");
+        assert_eq!(acquiring_img(1, true, 144).px[(96 * 144 + 72) * 3].round(), 154.0, "grey in standby: #9a9a9a");
+    }
+
+    #[test]
+    fn a_press_goes_through_unless_the_stratagem_is_busy() {
+        let now = Instant::now();
+        let v = |status: Status| SlotView { index: 0, status, fill: 0.5, badge: None, ready: None };
+        assert!(callable(&v(Status::Ready), now) && callable(&v(Status::Unknown), now));
+        for status in [Status::Cooldown, Status::Unavailable, Status::Active] {
+            assert!(!callable(&v(status), now), "{status:?}");
+        }
+        let ending = SlotView { ready: Some(engine::ReadyAt { at: now + Duration::from_millis(200), timed: true }), ..v(Status::Cooldown) };
+        assert!(callable(&ending, now), "the last moment of a cooldown read on screen");
+    }
+
     #[test]
     fn a_new_slot_key_takes_the_first_free_slot_and_saves_it() {
         let mut p = plugin(vec![]);
@@ -1300,6 +1657,7 @@ mod tests {
             loadout: vec![],
             catalog,
             icons: HashMap::new(),
+            setups: HashMap::new(),
             frame: 0,
             state: GameState::Missing,
             standby: true,
@@ -1403,6 +1761,7 @@ mod tests {
             loadout: vec![],
             catalog,
             icons: HashMap::new(),
+            setups: HashMap::new(),
             frame: 4,
             state: GameState::Mission,
             standby: false,

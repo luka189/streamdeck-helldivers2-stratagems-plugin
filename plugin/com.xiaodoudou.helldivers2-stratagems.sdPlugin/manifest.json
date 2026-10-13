@@ -6,7 +6,7 @@
   "Description": "Shows the stratagems read from your Helldivers 2 loadout and enters their codes.",
   "URL": "https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin",
   "SupportURL": "https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/issues",
-  "Version": "0.5.1.0",
+  "Version": "0.5.2.0",
   "Icon": "imgs/plugin",
   "CodePath": "hd2-plugin.exe",
   "CodePathWin": "hd2-plugin.exe",
@@ -34,6 +34,23 @@
       "States": [
         {
           "Image": "imgs/acquiring",
+          "TitleAlignment": "bottom",
+          "FontSize": 10
+        }
+      ]
+    },
+    {
+      "UUID": "com.xiaodoudou.helldivers2-stratagems.setup",
+      "Name": "Stratagem Setup",
+      "Tooltip": "Calls in two to four stratagem slots one after the other, throwing each; a stratagem that is not ready is skipped.",
+      "Icon": "imgs/setup_icon",
+      "PropertyInspectorPath": "pi/pi.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/setup",
           "TitleAlignment": "bottom",
           "FontSize": 10
         }

@@ -43,6 +43,7 @@ pub struct Config {
     pub left: String,
     pub right: String,
     pub throw_key: String,
+    pub auto_throw: bool, // a slot key throws its stratagem after the code (a Stratagem Setup key always does)
     pub menu_open_delay_ms: u64,
     pub scan_open_wait_ms: u64,
     pub key_hold_ms: u64,
@@ -66,6 +67,7 @@ impl Default for Config {
             left: "a".into(),
             right: "d".into(),
             throw_key: String::new(),
+            auto_throw: false,
             menu_open_delay_ms: 120,
             scan_open_wait_ms: 350,
             key_hold_ms: 35,
@@ -91,6 +93,10 @@ impl Config {
         }
         if !c.throw_key.is_empty() && !input::valid(&c.throw_key) {
             c.throw_key.clear();
+        }
+        // before 0.5.2, setting a throw key was what made the keys throw: a configuration of then keeps doing so
+        if v.get("auto_throw").and_then(serde_json::Value::as_bool).is_none() {
+            c.auto_throw = !c.throw_key.is_empty();
         }
         if c.menu_mode != "toggle" {
             c.menu_mode = "hold".into();
@@ -730,8 +736,9 @@ fn code_keys<'a>(code: &'a str, cfg: &'a Config) -> impl Iterator<Item = &'a str
     })
 }
 
-/// Enter a stratagem's code ("UDRL..."). Does not need the engine, so scanning carries on meanwhile.
-pub fn fire(code: &str, cfg: &Config) -> Result<(), String> {
+/// Enter a stratagem's code ("UDRL..."), then throw it when `throw` is set and a throw key is bound. Does not need
+/// the engine, so scanning carries on meanwhile.
+pub fn fire(code: &str, cfg: &Config, throw: bool) -> Result<(), String> {
     if Engine::game_focused(cfg).is_none() {
         let (pid, name) = crate::capture::foreground_owner();
         let game = locate(&cfg.process_name).map_or("not found".to_string(), |g| format!("pid {} via {:?}", g.pid, g.source));
@@ -757,7 +764,7 @@ pub fn fire(code: &str, cfg: &Config) -> Result<(), String> {
         input::up(&cfg.menu_key)?;
     }
     result?;
-    if !cfg.throw_key.is_empty() {
+    if throw && !cfg.throw_key.is_empty() {
         sleep(gap * 2);
         input::tap(&cfg.throw_key, cfg.key_hold_ms)?;
     }
@@ -824,6 +831,17 @@ mod tests {
     }
 
     // ---- Config::from_json ----
+
+    #[test]
+    fn throwing_after_the_code_is_a_setting_of_its_own() {
+        assert!(!Config::default().auto_throw);
+        let c = |v: serde_json::Value| Config::from_json(&v);
+        assert!(!c(json!({ "throw_key": "mouse1", "auto_throw": false })).auto_throw);
+        assert!(c(json!({ "throw_key": "mouse1", "auto_throw": true })).auto_throw);
+        // a configuration from before the setting: a throw key set meant throwing
+        assert!(c(json!({ "throw_key": "mouse1" })).auto_throw);
+        assert!(!c(json!({ "throw_key": "" })).auto_throw && !c(json!({})).auto_throw);
+    }
 
     #[test]
     fn config_defaults() {
@@ -1446,6 +1464,7 @@ mod tests {
             e.matcher.read_rows(&col, 1440, (x0, y0), 1.0)
         };
         let open = read(&mut e, "menu_open");
+        let fed = Instant::now(); // the timers are read from here on
         feed_n(&mut e, &open, 2);
         assert_eq!(
             names(&e),
@@ -1463,10 +1482,12 @@ mod tests {
         assert!(feed(&mut e, &closed));
         assert_eq!(view(&e, 3).status, Cooldown);
         assert_eq!(e.loadout().len(), 7, "slots off screen are remembered");
-        // the timers read on menu_open drive the countdowns: Quasar Cannon T-04:50, Warp Pack T-04:48
+        // the timers read on menu_open drive the countdowns: Quasar Cannon T-04:50, Warp Pack T-04:48, at most a
+        // rounding more, less the time gone since they were read (the reads above take seconds in a slow test build)
         for (k, shown) in [(4, 290.0), (5, 288.0)] {
             let (secs, timed) = left(&e, k);
-            assert!(timed && (secs - (shown + TIMER_ROUNDING)).abs() < 1.0, "slot {k}: {secs} s left");
+            let (most, least) = (shown + TIMER_ROUNDING, shown + TIMER_ROUNDING - fed.elapsed().as_secs_f32());
+            assert!(timed && secs <= most + 0.05 && secs >= least - 0.05, "slot {k}: {secs} s left, {least}..{most} expected");
         }
     }
 
