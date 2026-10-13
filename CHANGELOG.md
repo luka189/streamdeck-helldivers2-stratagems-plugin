@@ -4,6 +4,8 @@ What changed in each version of the plugin, newest first. The versions follow [s
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-13
+
 ### Fixed
 
 - **No mission stratagems on the keys before the mission.** On the loadout screen, the keys showed the mission's own stratagems too, like the Hellbomb or the SSSD Delivery, which the game only hands out later in the mission, and that moved your four along by one key. The keys now show Reinforce, SOS Beacon, Resupply and your four; the menu read at landing adds any stratagem a mission starts with.
@@ -58,7 +60,8 @@ The first version.
 - **A Clear Stratagem Slots key** that empties every slot until the next scan.
 - **Settings on the Scan key**, shared by every key: the scan period, the inputs, the timings, and the game's resolution for when its window can't be measured (the panel shows the size the plugin found).
 
-[Unreleased]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.5.0...dev
+[Unreleased]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.5.1...dev
+[0.5.1]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/xiaodoudou/streamdeck-helldivers2-stratagems-plugin/compare/v0.2.0...v0.3.0
