@@ -237,6 +237,7 @@ pub struct Matcher {
     pub catalog: Vec<Stratagem>,
     raw: Vec<Img>,
     low: Vec<Vec<f32>>,
+    low_glyph: Vec<Vec<f32>>, // the glyph alone (no frame), small, for the loadout card's frameless icons
     sized: Option<Sized>,
     last: HashMap<usize, (usize, usize, usize)>, // slot -> (template, dx, dy) of the last sure match
     status: StatusReader,
@@ -255,6 +256,29 @@ pub fn column_box(w: usize, h: usize, icon_scale: f64) -> (usize, usize, usize, 
     (x0, (h as f64 * 0.03) as usize, x1, (h as f64 * 0.72) as usize)
 }
 
+// The player's card on the loadout screen before a mission, at 2560x1440. Its "Mission Stratagems" row lists the
+// stratagems every mission gives (Reinforce first) and the mission's own, drawn like the menu's icons; the row under
+// it the four the player chose, larger and without their frame. Together they are the stratagem menu, in its order.
+// (left of the first icon, its top, its side, the step to the next)
+const CARD_MISSION: (f64, f64, f64, f64) = (80.0, 1037.0, 60.0, 81.3);
+const CARD_LOADOUT: (f64, f64, f64, f64) = (78.0, 1119.0, 98.0, 114.0);
+const CARD_MISSION_MAX: usize = 6;
+const CARD_LOADOUT_SLOTS: usize = 4;
+const CARD_PAD: f64 = 4.0; // the icons are searched this far around their place
+// glyph score of a stratagem on the card: icons read 0.79 or more, empty boxes and other screens 0.55 at most
+const CARD_MIN: f32 = 0.65;
+
+/// Where the loadout card's two rows sit inside a w x h game frame: (x0, y0, x1, y1).
+pub fn card_box(w: usize, h: usize) -> (usize, usize, usize, usize) {
+    let f = h as f64 / REF_HEIGHT;
+    let row_end = |(x, _, side, step): (f64, f64, f64, f64), n: usize| x + step * (n - 1) as f64 + side;
+    let x0 = (CARD_MISSION.0.min(CARD_LOADOUT.0) - 2.0 * CARD_PAD) * f;
+    let x1 = (row_end(CARD_MISSION, CARD_MISSION_MAX).max(row_end(CARD_LOADOUT, CARD_LOADOUT_SLOTS)) + 2.0 * CARD_PAD) * f;
+    let y0 = (CARD_MISSION.1 - 2.0 * CARD_PAD) * f;
+    let y1 = (CARD_LOADOUT.1 + CARD_LOADOUT.2 + 2.0 * CARD_PAD) * f;
+    (x0.round().max(0.0) as usize, y0.round() as usize, (x1.round() as usize).min(w), (y1.round() as usize).min(h))
+}
+
 impl Matcher {
     pub fn load(data: &Data) -> Result<Matcher, String> {
         let text = data.read("stratagems.json")?;
@@ -271,6 +295,15 @@ impl Matcher {
             catalog.push(s);
         }
         let low: Vec<Vec<f32>> = raw.iter().map(|r| normalized(&r.resize_area(ROW_LOW, ROW_LOW).px)).collect();
+        let band = (ICON_SIZE as f64 * FRAME_FRAC).round() as usize;
+        let low_glyph: Vec<Vec<f32>> = raw
+            .iter()
+            .map(|r| {
+                normalized(
+                    &r.crop(band as isize, band as isize, ICON_SIZE - 2 * band, ICON_SIZE - 2 * band).resize_area(ROW_LOW, ROW_LOW).px,
+                )
+            })
+            .collect();
         let mut lookalikes = vec![Vec::new(); low.len()];
         for i in 0..low.len() {
             for j in i + 1..low.len() {
@@ -281,7 +314,7 @@ impl Matcher {
             }
         }
         let status = StatusReader::load(data);
-        Ok(Matcher { catalog, raw, low, sized: None, last: HashMap::new(), status, lookalikes })
+        Ok(Matcher { catalog, raw, low, low_glyph, sized: None, last: HashMap::new(), status, lookalikes })
     }
 
     pub fn reset(&mut self) {
@@ -422,6 +455,45 @@ impl Matcher {
         out
     }
 
+    /// The stratagems on the player's card of the loadout screen, in the order of the stratagem menu (empty boxes
+    /// left out), with whether each reading is sure; None when the card is not on screen, which its first icon
+    /// tells: the mission row always starts with Reinforce. `img` is the capture of `card_box`, `origin` its top-left
+    /// in the game frame.
+    pub fn read_card(&self, img: &Img, h: usize, origin: (usize, usize)) -> Option<Vec<(usize, bool)>> {
+        let f = h as f64 / REF_HEIGHT;
+        let at = |(x, y, side, step): (f64, f64, f64, f64), k: usize| {
+            let size = (side * f).round() as usize;
+            let pad = (CARD_PAD * f).round().max(2.0) as usize;
+            let x = ((x + step * k as f64) * f).round() as isize - (origin.0 + pad) as isize;
+            let y = (y * f).round() as isize - (origin.1 + pad) as isize;
+            self.identify(&img.crop(x, y, size + 2 * pad, size + 2 * pad), size)
+        };
+        let (first, sure) = at(CARD_MISSION, 0)?;
+        if self.catalog[first].name != "Reinforce" || !sure {
+            return None;
+        }
+        let mission = (1..CARD_MISSION_MAX).map_while(|k| at(CARD_MISSION, k));
+        let loadout = (0..CARD_LOADOUT_SLOTS).filter_map(|k| at(CARD_LOADOUT, k));
+        Some(std::iter::once((first, sure)).chain(mission).chain(loadout).collect())
+    }
+
+    /// Which stratagem's glyph `win` shows, drawn `size` pixels square somewhere in it, with or without its frame:
+    /// (template, sure), when one scores CARD_MIN. Ranked on small copies of the glyph first, then the best few
+    /// scored at full size; sure as for the menu's rows.
+    fn identify(&self, win: &Img, size: usize) -> Option<(usize, bool)> {
+        let band = (size as f64 * FRAME_FRAC).round() as usize;
+        let crops = low_crops(win, ROW_LOW as f64 / (size - 2 * band) as f64)?;
+        let idx: Vec<usize> = (band..size - band).flat_map(|y| (band..size - band).map(move |x| y * size + x)).collect();
+        let mut full: Vec<(f32, usize)> = rank_low(&self.low_glyph, &crops)[..ROW_TOP.min(self.low_glyph.len())]
+            .iter()
+            .map(|&(_, t)| (best_offset(win, &flatten(&self.raw[t].resize_area(size, size).px, &idx), &idx, size).0, t))
+            .collect();
+        full.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let (best, t) = full[0];
+        let second = full.get(1).map_or(-1.0, |s| s.0);
+        (best >= CARD_MIN).then_some((t, best >= ROW_SURE || best - second >= ROW_MARGIN))
+    }
+
     /// (template, whole-icon score, sure, dx, dy). The whole icon decides whether an icon is there at all,
     /// the glyph alone which one it is.
     fn classify(&mut self, win: &Img, k: usize) -> Option<(usize, f32, bool, usize, usize)> {
@@ -434,34 +506,8 @@ impl Matcher {
             }
         }
 
-        let lw = (win.w as f64 * ROW_LOW as f64 / size as f64).round() as usize;
-        let lh = (win.h as f64 * ROW_LOW as f64 / size as f64).round() as usize;
-        if lw < ROW_LOW || lh < ROW_LOW {
-            return None;
-        }
-        let ws = win.resize_area(lw, lh);
-        // raw crops plus their inverse spread; the templates are zero-mean, so dot(raw, t) is the numerator
-        let mut crops: Vec<(Vec<f32>, f32)> = Vec::new();
-        for j in 0..=lh - ROW_LOW {
-            for i in 0..=lw - ROW_LOW {
-                let c = ws.crop(i as isize, j as isize, ROW_LOW, ROW_LOW).px;
-                let mut sum = [0.0f32; 3];
-                for (q, v) in c.iter().enumerate() {
-                    sum[q % 3] += v;
-                }
-                let sumsq = dot(&c, &c);
-                let n = (ROW_LOW * ROW_LOW) as f32;
-                let var = sumsq - (sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]) / n;
-                crops.push((c, if var > 1e-6 { 1.0 / var.sqrt() } else { 0.0 }));
-            }
-        }
-        let mut low: Vec<(f32, usize)> = self
-            .low
-            .iter()
-            .enumerate()
-            .map(|(t, tv)| (crops.iter().map(|(c, inv)| dot(tv, c) * inv).fold(f32::MIN, f32::max), t))
-            .collect();
-        low.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let crops = low_crops(win, ROW_LOW as f64 / size as f64)?;
+        let low = rank_low(&self.low, &crops);
         if low[0].0 < ROW_LOW_MIN {
             self.last.remove(&k);
             return None;
@@ -497,6 +543,39 @@ impl Matcher {
         }
         Some((best, exist, sure, dx, dy))
     }
+}
+
+/// Every ROW_LOW-square crop of `win` scaled by `scale`, with its inverse spread (0 when flat): the small templates
+/// are zero-mean, so dot(crop, template) times it is their correlation. None when the scaled window is too small.
+fn low_crops(win: &Img, scale: f64) -> Option<Vec<(Vec<f32>, f32)>> {
+    let (lw, lh) = ((win.w as f64 * scale).round() as usize, (win.h as f64 * scale).round() as usize);
+    if lw < ROW_LOW || lh < ROW_LOW {
+        return None;
+    }
+    let ws = win.resize_area(lw, lh);
+    let mut crops = Vec::new();
+    for j in 0..=lh - ROW_LOW {
+        for i in 0..=lw - ROW_LOW {
+            let c = ws.crop(i as isize, j as isize, ROW_LOW, ROW_LOW).px;
+            let mut sum = [0.0f32; 3];
+            for (q, v) in c.iter().enumerate() {
+                sum[q % 3] += v;
+            }
+            let sumsq = dot(&c, &c);
+            let n = (ROW_LOW * ROW_LOW) as f32;
+            let var = sumsq - (sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]) / n;
+            crops.push((c, if var > 1e-6 { 1.0 / var.sqrt() } else { 0.0 }));
+        }
+    }
+    Some(crops)
+}
+
+/// Each small template's best correlation over the crops, best first: (score, template).
+fn rank_low(templates: &[Vec<f32>], crops: &[(Vec<f32>, f32)]) -> Vec<(f32, usize)> {
+    let mut low: Vec<(f32, usize)> =
+        templates.iter().enumerate().map(|(t, tv)| (crops.iter().map(|(c, inv)| dot(tv, c) * inv).fold(f32::MIN, f32::max), t)).collect();
+    low.sort_by(|a, b| b.0.total_cmp(&a.0));
+    low
 }
 
 /// For an unsure reading of an icon partly under the game's progress fill (cooldown from the bottom,

@@ -10,13 +10,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::capture::{GameWindow, Grabber, Source, game_in_focus, locate};
 use crate::data::Data;
+use crate::img::Img;
 use crate::input;
 pub use crate::matcher::Badge;
-use crate::matcher::{Matcher, Row, column_box};
+use crate::matcher::{Matcher, Row, card_box, column_box};
 pub use crate::status::Status;
 
 const UNSURE_FACTOR: u32 = 3; // a lookalike-close reading must top its slot this many times longer
 const MENU_TAP_MS: u64 = 60; // shorter taps of the menu key have been missed by the game
+// Reading the menu the plugin opens: the screen is read every MENU_POLL until the menu has settled (see
+// menu_settled), a menu that has not opened is looked at once more MENU_LATE later, and closing it is checked every
+// MENU_POLL for MENU_CLOSE_CHECK before the menu key is pressed again.
+const MENU_POLL: Duration = Duration::from_millis(25);
+const MENU_LATE: Duration = Duration::from_millis(250);
+const MENU_CLOSE_CHECK: Duration = Duration::from_millis(400);
 const MENU_OPEN_ROWS: usize = 4; // the open menu lists Reinforce, SoS Beacon and Resupply plus the loadout
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -120,6 +127,7 @@ struct Slot {
     cooldown_from: Option<Instant>,   // when a cooldown was seen starting full, to learn its real length
     seen_at: Instant,                 // last time its row was on screen
     ends: Option<(Instant, Instant)>, // the cooldown's end as bounded by the timers read on screen
+    prefilled: bool,                  // read from the loadout screen, not yet seen in a mission (see Engine::prefill)
 }
 
 const TAKEOVER_SCANS: u32 = 4; // sure readings of another stratagem in a row before it takes a slot
@@ -175,6 +183,7 @@ impl Slot {
             cooldown_from: None,
             seen_at: Instant::now(),
             ends: None,
+            prefilled: false,
         };
         s.observe_fill(r);
         s
@@ -298,9 +307,13 @@ pub struct Engine {
     pub focused: bool,
     pub scan_ms: f64,
     pub last_error: Option<String>,       // why the last scan could not read the game
+    pub menu_rows: Vec<usize>,            // rows seen by the last menu read: before the menu key, then after it
+    pub menu_open_ms: Option<u64>,        // how long the last menu read kept the menu open, when it opened it
     pub source: Option<Source>,           // how the game's position was found in the last scan
     pub measured: Option<(usize, usize)>, // the game's size as found in the last scan, before any size set by hand
     last_hud: Option<Instant>,            // last time any stratagem row was on screen
+    card: Option<Vec<(usize, bool)>>,     // the loadout card as last read, to be read the same once more
+    card_seen: Option<Instant>,           // last time the loadout card was on screen
 }
 
 /// What the game is doing, as far as the screen tells.
@@ -315,6 +328,8 @@ const HUD_GRACE: Duration = Duration::from_secs(3); // loading flickers and menu
 // Without the HUD this long, the mission is over: forget the loadout. Long enough to survive a map
 // check or a death camera, which also hide it.
 const LOBBY_RESET: Duration = Duration::from_secs(10);
+// After the loadout screen, a mission is expected this long: the next stratagem HUD is that mission starting.
+const MISSION_EXPECTED: Duration = Duration::from_secs(300);
 
 static FIRING: Mutex<()> = Mutex::new(());
 
@@ -329,9 +344,13 @@ impl Engine {
             focused: false,
             scan_ms: 0.0,
             last_error: None,
+            menu_rows: Vec::new(),
+            menu_open_ms: None,
             source: None,
             measured: None,
             last_hud: None,
+            card: None,
+            card_seen: None,
         })
     }
 
@@ -378,6 +397,73 @@ impl Engine {
         self.matcher.reset();
     }
 
+    /// Slots read in the mission, as opposed to those known only from the loadout screen.
+    pub fn mission_slots(&self) -> usize {
+        self.slots.values().filter(|s| !s.prefilled).count()
+    }
+
+    /// Read the player's card on the loadout screen and, once the same card has been read twice in a row, fill the
+    /// slots with it (see `prefill`). Returns whether the loadout changed.
+    pub fn read_card(&mut self, cfg: &Config) -> Result<bool, String> {
+        let mut fg = locate(&cfg.process_name).ok_or("game not running")?;
+        if let Some((w, h)) = cfg.game_size() {
+            (fg.w, fg.h) = (w, h);
+        }
+        let (x0, y0, x1, y1) = card_box(fg.w, fg.h);
+        let img: Img = self.grabber.grab(fg.x + x0 as i32, fg.y + y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32)?;
+        Ok(self.take_card(self.matcher.read_card(&img, fg.h, (x0, y0))))
+    }
+
+    /// A reading of the loadout card, None when it is not on screen. The card on screen means a mission is coming
+    /// (see mission_expected); read the same twice in a row, it fills the slots. Returns whether the loadout changed.
+    fn take_card(&mut self, card: Option<Vec<(usize, bool)>>) -> bool {
+        if card.is_some() {
+            self.card_seen = Some(Instant::now());
+        }
+        let again = card.is_some() && card == self.card;
+        self.card = card;
+        again && self.prefill(self.card.clone().unwrap_or_default())
+    }
+
+    /// The loadout screen was on screen within MISSION_EXPECTED: the next stratagem HUD (Reinforce, which the
+    /// closed HUD always shows) is a mission starting, and the menu is worth opening as soon as the game lets it.
+    pub fn mission_expected(&self) -> bool {
+        self.card_seen.is_some_and(|t| t.elapsed() < MISSION_EXPECTED)
+    }
+
+    /// Before a mission, fill the slots with the stratagems of the loadout screen's card, in menu order, shown
+    /// unavailable: nothing can be called in yet. The mission's first reading of a slot takes it over (see set_slot),
+    /// and the open menu drops those it does not list (see scan_menu). Slots read in a mission are never touched.
+    fn prefill(&mut self, card: Vec<(usize, bool)>) -> bool {
+        if card.is_empty() || self.mission_slots() > 0 {
+            return false;
+        }
+        let have: Vec<(usize, usize)> = self.slots.iter().map(|(&k, s)| (k, s.index)).collect();
+        let want: Vec<(usize, usize)> = card.iter().enumerate().map(|(k, &(index, _))| (k, index)).collect();
+        if have == want {
+            return false;
+        }
+        self.slots.clear();
+        self.pending.clear();
+        for (k, (index, _)) in card.into_iter().enumerate() {
+            let row = Row {
+                index,
+                score: 0.0,
+                sure: false,
+                slot: k,
+                status: Status::Unavailable,
+                fill_bottom: 0.0,
+                fill_top: 0.0,
+                badge: None,
+                timer: None,
+            };
+            let mut s = Slot::new(&row, self.cooldown_s(index));
+            s.prefilled = true;
+            self.slots.insert(k, s);
+        }
+        true
+    }
+
     /// The game window, only if it is the one receiving keyboard input.
     fn game_focused(cfg: &Config) -> Option<GameWindow> {
         locate(&cfg.process_name).filter(|_| game_in_focus(&cfg.process_name))
@@ -408,6 +494,7 @@ impl Engine {
                 cur.score = cur.score.max(r.score);
                 cur.sure |= r.sure;
                 cur.challenger = None;
+                cur.prefilled = false;
                 return false;
             }
             let streak = match cur.challenger {
@@ -491,9 +578,13 @@ impl Engine {
         self.last_error = None;
         if !rows.is_empty() {
             self.last_hud = Some(Instant::now());
-        } else if self.last_hud.is_some_and(|t| t.elapsed() > LOBBY_RESET) && !self.slots.is_empty() {
-            self.clear();
-            return true;
+        } else if self.last_hud.is_some_and(|t| t.elapsed() > LOBBY_RESET) {
+            // the mission is over: forget it, once, so that a loadout read on the loadout screen afterwards stays
+            self.last_hud = None;
+            if !self.slots.is_empty() {
+                self.clear();
+                return true;
+            }
         }
         self.scan_ms = t.elapsed().as_secs_f64() * 1000.0;
         let seen: HashMap<(usize, usize), &Row> = rows.iter().map(|r| ((r.slot, r.index), r)).collect();
@@ -520,7 +611,9 @@ impl Engine {
         changed
     }
 
-    /// Open the menu if it is closed, read it, and put the menu back as it was.
+    /// Open the menu if it is closed, read it, and put the menu back as it was. The menu stays open only until it
+    /// has settled on screen (see read_open_menu), and the plugin presses the menu key again only to close a menu
+    /// it opened, or to reopen one its press closed.
     pub fn scan_menu(&mut self, cfg: &Config) -> Result<bool, String> {
         if Engine::game_focused(cfg).is_none() {
             return Err("game not in focus; the menu key would go to another window".into());
@@ -528,44 +621,102 @@ impl Engine {
         let _busy = FIRING.try_lock().map_err(|_| "busy entering a stratagem")?;
         let wait = Duration::from_millis(cfg.menu_open_delay_ms + cfg.scan_open_wait_ms);
         let before = self.read(cfg)?;
+        self.menu_open_ms = None;
         let reads = if cfg.menu_mode == "hold" {
             input::down(&cfg.menu_key)?;
-            sleep(wait);
-            let after = self.read(cfg);
+            let pressed = Instant::now();
+            let after = self.read_open_menu(cfg, wait);
             input::up(&cfg.menu_key)?;
+            self.menu_open_ms = Some(pressed.elapsed().as_millis() as u64);
             vec![before, after?]
         } else {
             let hold = cfg.key_hold_ms.max(MENU_TAP_MS);
             input::tap(&cfg.menu_key, hold)?;
-            sleep(wait);
-            let after = self.read(cfg)?;
-            if after.len() < before.len() {
+            let pressed = Instant::now();
+            let mut after = self.read_open_menu(cfg, wait)?;
+            let was_open = before.len() >= MENU_OPEN_ROWS;
+            if !was_open && after.len() < MENU_OPEN_ROWS {
+                // not open (yet): the game may still be ignoring the key, or be slow to show the menu
+                sleep(MENU_LATE);
+                after = self.read(cfg)?;
+            }
+            if was_open && after.len() < before.len() {
                 // it was already open and the tap closed it: reopen, keep the earlier read
                 sleep(Duration::from_millis(100));
                 input::tap(&cfg.menu_key, hold)?;
                 vec![before]
-            } else {
-                // the game has been seen to ignore the closing tap: check, and tap again if still open
+            } else if !was_open && after.len() >= MENU_OPEN_ROWS {
+                // opened by the tap: close it, and check, as the game has been seen to ignore a closing tap
                 input::tap(&cfg.menu_key, hold)?;
+                self.menu_open_ms = Some(pressed.elapsed().as_millis() as u64);
                 for _ in 0..2 {
-                    sleep(Duration::from_millis(400));
-                    if self.read(cfg)?.len() < MENU_OPEN_ROWS {
+                    if self.menu_closes(cfg)? {
                         break;
                     }
                     input::tap(&cfg.menu_key, hold)?;
                 }
                 vec![before, after]
+            } else {
+                // the game ignored the tap: nothing to put back
+                vec![before, after]
             }
         };
+        self.menu_rows = reads.iter().map(Vec::len).collect();
+        Ok(self.menu_read(&reads))
+    }
+
+    /// Right after the menu key: read the screen every MENU_POLL until the menu has settled (menu_settled), or for
+    /// `max` at most; the last reading.
+    fn read_open_menu(&mut self, cfg: &Config, max: Duration) -> Result<Vec<Row>, String> {
+        let start = Instant::now();
+        let mut last: Option<Vec<Row>> = None;
+        loop {
+            sleep(MENU_POLL);
+            let rows = self.read(cfg)?;
+            if menu_settled(last.as_deref(), &rows) || start.elapsed() >= max {
+                return Ok(rows);
+            }
+            last = Some(rows);
+        }
+    }
+
+    /// Whether the menu closes within MENU_CLOSE_CHECK after the closing tap.
+    fn menu_closes(&mut self, cfg: &Config) -> Result<bool, String> {
+        let start = Instant::now();
+        while start.elapsed() < MENU_CLOSE_CHECK {
+            sleep(MENU_POLL);
+            if self.read(cfg)?.len() < MENU_OPEN_ROWS {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Take in the readings around opening the menu: every sure row fills its slot at once and statuses count from
+    /// one reading. The open menu lists every slot, so a slot still only known from the loadout screen is not part
+    /// of this mission and goes. Returns whether the loadout changed.
+    fn menu_read(&mut self, reads: &[Vec<Row>]) -> bool {
         let mut changed = false;
         for r in reads.iter().flatten().filter(|r| r.sure) {
             changed |= self.set_slot(r);
         }
-        for rows in &reads {
+        for rows in reads {
             changed |= self.note_statuses(rows, 1);
         }
-        Ok(changed)
+        if reads.iter().any(|rows| rows.len() >= MENU_OPEN_ROWS) && self.slots.values().any(|s| s.prefilled) {
+            self.slots.retain(|_, s| !s.prefilled);
+            changed = true;
+        }
+        changed
     }
+}
+
+/// Whether the open menu has settled: at least MENU_OPEN_ROWS rows, each with its status line read, the same
+/// stratagems at the same places with the same statuses as the reading before. The rows slide in when the menu opens,
+/// and one reading of them may still catch a row on its way.
+fn menu_settled(before: Option<&[Row]>, rows: &[Row]) -> bool {
+    let key = |rows: &[Row]| rows.iter().map(|r| (r.slot, r.index, r.status)).collect::<Vec<_>>();
+    rows.len() >= MENU_OPEN_ROWS && rows.iter().all(|r| r.status != Status::Unknown) && before.is_some_and(|b| key(b) == key(rows))
 }
 
 /// The bound key for each arrow of a code ("UDRL..."); any other character is skipped.
@@ -1170,6 +1321,103 @@ mod tests {
         assert!(feed(&mut e, &[]));
         assert!(e.loadout().is_empty());
         assert!(!feed(&mut e, &[]), "nothing left to forget");
+    }
+
+    // ---- the loadout screen ----
+
+    fn card(e: &Engine, names: &[&str]) -> Vec<(usize, bool)> {
+        names.iter().map(|n| (idx(e, n), true)).collect()
+    }
+
+    fn menu(e: &Engine, names: &[&str]) -> Vec<Row> {
+        names.iter().enumerate().map(|(k, n)| row(idx(e, n), k, Status::Ready)).collect()
+    }
+
+    #[test]
+    fn the_loadout_card_fills_the_slots_unavailable_in_menu_order() {
+        let mut e = engine();
+        let c = card(&e, &["Reinforce", "SoS Beacon", "Resupply", "Orbital Laser"]);
+        assert!(e.prefill(c.clone()));
+        assert_eq!(names(&e), ["Reinforce", "SoS Beacon", "Resupply", "Orbital Laser"]);
+        assert!((0..4).all(|k| view(&e, k).status == Status::Unavailable), "nothing can be called in before the mission");
+        assert_eq!(e.mission_slots(), 0);
+        assert!(!e.prefill(c), "the same card again changes nothing");
+        assert!(e.prefill(card(&e, &["Reinforce", "SoS Beacon", "Resupply", "Eagle Airstrike"])), "the player picks another");
+        assert_eq!(names(&e)[3], "Eagle Airstrike");
+        assert!(!e.prefill(vec![]));
+    }
+
+    #[test]
+    fn the_mission_takes_over_the_prefilled_slots() {
+        let mut e = engine();
+        e.prefill(card(&e, &["Reinforce", "SoS Beacon", "Resupply", "Orbital Laser"]));
+        let (reinforce, railcannon) = (idx(&e, "Reinforce"), idx(&e, "Orbital Railcannon Strike"));
+        // the closed HUD shows Reinforce: confirmed, with its status as read
+        feed_n(&mut e, &[row(reinforce, 0, Status::Ready)], 2);
+        assert_eq!((e.mission_slots(), view(&e, 0).status), (1, Status::Ready));
+        assert_eq!(view(&e, 3).status, Status::Unavailable, "not seen in the mission yet");
+        // another stratagem read where the card said otherwise replaces it
+        feed_n(&mut e, &[row(railcannon, 3, Status::Ready)], 2);
+        assert_eq!(names(&e)[3], "Orbital Railcannon Strike");
+        assert!(!e.prefill(card(&e, &["Reinforce"])), "slots read in a mission are never prefilled over");
+    }
+
+    #[test]
+    fn the_open_menu_drops_prefilled_slots_it_does_not_list() {
+        let mut e = engine();
+        e.prefill(card(&e, &["Reinforce", "SoS Beacon", "Resupply", "Call In Super Destroyer", "Orbital Laser"]));
+        assert!(e.menu_read(&[menu(&e, &["Reinforce", "SoS Beacon", "Resupply", "Orbital Laser"])]));
+        assert_eq!(names(&e), ["Reinforce", "SoS Beacon", "Resupply", "Orbital Laser"]);
+        assert_eq!(e.mission_slots(), 4);
+        assert!((0..4).all(|k| view(&e, k).status == Status::Ready));
+        // a closed menu (a row or two) says nothing about the slots it does not show
+        let mut e = engine();
+        e.prefill(card(&e, &["Reinforce", "SoS Beacon", "Resupply", "Orbital Laser"]));
+        e.menu_read(&[menu(&e, &["Reinforce"])]);
+        assert_eq!(names(&e), ["Reinforce", "SoS Beacon", "Resupply", "Orbital Laser"]);
+    }
+
+    #[test]
+    fn the_menu_has_settled_once_two_readings_agree_on_its_rows() {
+        let e = engine();
+        let open = menu(&e, &["Reinforce", "SoS Beacon", "Resupply", "Orbital Laser"]);
+        assert!(!menu_settled(None, &open), "one reading is not enough");
+        assert!(menu_settled(Some(&open), &open));
+        assert!(!menu_settled(Some(&open[..3]), &open), "a row still sliding in");
+        assert!(!menu_settled(Some(&open[..3]), &open[..3]), "too few rows: the closed HUD");
+        let mut unread = open.clone();
+        unread[3].status = Status::Unknown;
+        assert!(!menu_settled(Some(&unread), &unread), "a status line not read yet");
+        let mut moved = open.clone();
+        moved[3].slot = 4;
+        assert!(!menu_settled(Some(&moved), &open));
+    }
+
+    #[test]
+    fn the_card_read_twice_fills_the_slots_and_announces_a_mission() {
+        let mut e = engine();
+        assert!(!e.mission_expected());
+        let c = card(&e, &["Reinforce", "SoS Beacon", "Resupply"]);
+        assert!(!e.take_card(Some(c.clone())), "one reading is not enough");
+        assert!(e.mission_expected(), "the loadout screen is on: a mission is coming");
+        assert!(e.take_card(Some(c.clone())));
+        assert_eq!(names(&e), ["Reinforce", "SoS Beacon", "Resupply"]);
+        assert!(!e.take_card(None) && !e.take_card(Some(c.clone())), "a gap starts the count again");
+        assert!(e.mission_expected());
+        e.card_seen = Some(ago(MISSION_EXPECTED.as_secs_f32() + 1.0));
+        assert!(!e.mission_expected(), "too long ago");
+    }
+
+    #[test]
+    fn a_loadout_read_after_a_mission_stays() {
+        let mut e = engine();
+        let reinforce = idx(&e, "Reinforce");
+        feed_n(&mut e, &[row(reinforce, 0, Status::Ready)], 2);
+        e.last_hud = Some(ago(LOBBY_RESET.as_secs_f32() + 1.0));
+        assert!(feed(&mut e, &[]), "the mission is over");
+        assert!(e.prefill(card(&e, &["Reinforce", "SoS Beacon"])));
+        assert!(!feed(&mut e, &[]));
+        assert_eq!(names(&e), ["Reinforce", "SoS Beacon"]);
     }
 
     #[test]

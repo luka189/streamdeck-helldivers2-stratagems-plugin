@@ -381,8 +381,14 @@ const TIMER_SLACK: Duration = Duration::from_millis(300);
 // at mission start, the menu is tried every MENU_RETRY until it opens, MENU_TRIES times at most (about 20 s)
 const MENU_RETRY: Duration = Duration::from_secs(2);
 const MENU_TRIES: u32 = 10;
+// A mission expected from the loadout screen (Engine::mission_expected) is tried at once and more often: the HUD
+// showing Reinforce is the cue, and a press the game ignores during the landing costs nothing.
+const MENU_SETTLE_EXPECTED: Duration = Duration::from_millis(300);
+const MENU_RETRY_EXPECTED: Duration = Duration::from_secs(1);
+const MENU_TRIES_EXPECTED: u32 = 20;
 const MENU_OPEN_ROWS: usize = 4; // the open menu lists Reinforce, SoS Beacon and Resupply, plus the loadout
 const GAME_POLL: Duration = Duration::from_secs(2); // how often to check that the game is running
+const CARD_PERIOD: Duration = Duration::from_secs(1); // how often to look for the loadout screen before a mission
 
 /// Lets a key press wake the scan thread and switch it to fast scans for a while.
 #[derive(Default)]
@@ -505,9 +511,11 @@ fn scan_thread(engine: Arc<Mutex<Engine>>, cfg: Arc<Mutex<Config>>, tx: mpsc::Un
     let (mut last_err, mut was_state): (Option<String>, Option<GameState>) = (None, None);
     let mut last_source = None;
     let (mut mission_since, mut menu_tries, mut menu_tried): (Option<Instant>, u32, Option<Instant>) = (None, 0, None);
+    let mut expected = false; // the mission under way was expected from the loadout screen
     let mut menu_skip: Option<String> = None; // why the last mission-start menu read was refused, logged once
     let (mut beat, mut scans, mut focused) = (Instant::now(), 0u32, 0u32);
     let (mut running, mut looked): (Option<bool>, Option<Instant>) = (None, None);
+    let mut card_read: Option<Instant> = None;
     loop {
         let c = cfg.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let t = Instant::now();
@@ -537,7 +545,7 @@ fn scan_thread(engine: Arc<Mutex<Engine>>, cfg: Arc<Mutex<Config>>, tx: mpsc::Un
             wake.sleep(GAME_POLL, t.elapsed());
             continue;
         }
-        let (l, ms, err, state) = {
+        let (l, ms, err, state, mission, coming) = {
             let mut e = engine.lock().unwrap_or_else(|p| p.into_inner());
             if c.auto_scan {
                 if std::panic::catch_unwind(AssertUnwindSafe(|| e.scan(&c))).is_err() {
@@ -546,11 +554,20 @@ fn scan_thread(engine: Arc<Mutex<Engine>>, cfg: Arc<Mutex<Config>>, tx: mpsc::Un
                 scans += 1;
                 focused += e.focused as u32;
             }
+            // before a mission, the player's card on the loadout screen tells the loadout: look for it now and then
+            if c.auto_scan && e.game_state() == GameState::Lobby && card_read.is_none_or(|t: Instant| t.elapsed() >= CARD_PERIOD) {
+                card_read = Some(Instant::now());
+                match std::panic::catch_unwind(AssertUnwindSafe(|| e.read_card(&c))) {
+                    Ok(Ok(true)) => log("read the loadout from the loadout screen"),
+                    Ok(_) => {}
+                    Err(_) => log("loadout screen read panicked; carrying on"),
+                }
+            }
             if e.source != last_source {
                 log(format!("game position from {:?}", e.source));
                 last_source = e.source;
             }
-            (e.loadout(), e.scan_ms, e.last_error.clone(), e.game_state())
+            (e.loadout(), e.scan_ms, e.last_error.clone(), e.game_state(), e.mission_slots(), e.mission_expected())
         };
         if err != last_err {
             match &err {
@@ -560,24 +577,29 @@ fn scan_thread(engine: Arc<Mutex<Engine>>, cfg: Arc<Mutex<Config>>, tx: mpsc::Un
             last_err = err;
         }
         if was_state != Some(state) {
-            log(format!("game state {state:?}"));
             if state == GameState::Mission {
-                (mission_since, menu_tries, menu_tried, menu_skip) = (Some(Instant::now()), 0, None, None);
+                (mission_since, menu_tries, menu_tried, menu_skip, expected) = (Some(Instant::now()), 0, None, None, coming);
             }
+            log(format!(
+                "game state {state:?}{}",
+                if state == GameState::Mission && expected { " (expected from the loadout screen)" } else { "" }
+            ));
             was_state = Some(state);
             if tx.send(Event::State(state)).is_err() {
                 return;
             }
         }
-        // a mission has started and the loadout is not known yet: open the menu and read it. The HUD shows
-        // before the player can open the menu (hellpod, landing), so a try that finds no open menu is
-        // retried soon, until the loadout is known, whoever opened the menu
+        let (settle, retry, tries) =
+            if expected { (MENU_SETTLE_EXPECTED, MENU_RETRY_EXPECTED, MENU_TRIES_EXPECTED) } else { (MENU_SETTLE, MENU_RETRY, MENU_TRIES) };
+        // a mission has started and the loadout has not been read in it yet (one known from the loadout screen is
+        // checked too): open the menu and read it. The HUD shows before the player can open the menu (hellpod,
+        // landing), so a try that finds no open menu is retried soon, until the loadout is known, whoever opened it
         if c.auto_menu_scan
             && state == GameState::Mission
-            && l.iter().flatten().count() < MENU_OPEN_ROWS
-            && menu_tries < MENU_TRIES
-            && mission_since.is_some_and(|t| t.elapsed() >= MENU_SETTLE)
-            && menu_tried.is_none_or(|t: Instant| t.elapsed() >= MENU_RETRY)
+            && mission < MENU_OPEN_ROWS
+            && menu_tries < tries
+            && mission_since.is_some_and(|t| t.elapsed() >= settle)
+            && menu_tried.is_none_or(|t: Instant| t.elapsed() >= retry)
         {
             menu_tried = Some(Instant::now());
             let mut e = engine.lock().unwrap_or_else(|p| p.into_inner());
@@ -585,12 +607,15 @@ fn scan_thread(engine: Arc<Mutex<Engine>>, cfg: Arc<Mutex<Config>>, tx: mpsc::Un
                 Ok(_) => {
                     // only presses count as tries: a refused one (game not in front) sent nothing
                     menu_tries += 1;
-                    if e.loadout().iter().flatten().count() >= MENU_OPEN_ROWS {
-                        log(format!("mission start: read the loadout from the menu (try {menu_tries})"));
-                    } else if menu_tries < MENU_TRIES {
-                        log(format!("mission start: the menu did not open (try {menu_tries}), trying again"));
+                    // rows on screen before the menu key and after it: whether the menu really opened
+                    let open = e.menu_open_ms.map_or(String::new(), |ms| format!(", open for {ms} ms"));
+                    let rows = format!("rows before and after the menu key: {:?}{open}", e.menu_rows);
+                    if e.mission_slots() >= MENU_OPEN_ROWS {
+                        log(format!("mission start: read the loadout from the menu (try {menu_tries}; {rows})"));
+                    } else if menu_tries < tries {
+                        log(format!("mission start: the menu did not open (try {menu_tries}; {rows}), trying again"));
                     } else {
-                        log(format!("mission start: the menu did not open after {menu_tries} tries; open it once, or press Scan"));
+                        log(format!("mission start: the menu did not open after {menu_tries} tries ({rows}); open it once, or press Scan"));
                     }
                 }
                 Err(err) if menu_skip.as_ref() != Some(&err) => {
