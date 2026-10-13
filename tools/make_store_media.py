@@ -120,34 +120,10 @@ def arrow(img: Image.Image, x: int, y: int) -> None:
 
 
 def make_icon() -> Image.Image:
-    """An original icon: four stratagem arrows in a framed tile (no game artwork)."""
-    s = 288 * 4
-    img = Image.new("RGB", (s, s), (20, 20, 15))
-    d = ImageDraw.Draw(img)
-    b = s // 14
-    d.rectangle((b, b, s - b - 1, s - b - 1), outline=YELLOW, width=b)
-    c = s // 2
-
-    def arrow_up(cx: int, cy: int, size: int) -> list[tuple[float, float]]:
-        hw, hh, sw, sh = size * 0.5, size * 0.5, size * 0.2, size * 0.42
-        return [(cx, cy - hh), (cx + hw, cy), (cx + sw, cy), (cx + sw, cy + sh), (cx - sw, cy + sh), (cx - sw, cy), (cx - hw, cy)]
-
-    def rotate(points, cx, cy, quarter):
-        out = []
-        for x, y in points:
-            dx, dy = x - cx, y - cy
-            for _ in range(quarter):
-                dx, dy = -dy, dx
-            out.append((cx + dx, cy + dy))
-        return out
-
-    size, off = s * 0.24, s * 0.215
-    for quarter, (dx, dy) in enumerate([(0, -1), (1, 0), (0, 1), (-1, 0)]):
-        cx, cy = c + dx * off, c + dy * off
-        d.polygon(rotate(arrow_up(cx, cy, size), cx, cy, quarter), fill=CREAM)
-    r = s * 0.035
-    d.ellipse((c - r, c - r, c + r, c + r), fill=YELLOW)
-    return img.resize((288, 288), Image.LANCZOS)
+    """The plugin's own icon (tools/icon_src/plugin.svg, an original drawing, no game artwork) at the Marketplace size."""
+    page = fitz.open(str(ROOT / "tools" / "icon_src" / "plugin.svg"))[0]
+    z = 288 / page.rect.width
+    return Image.open(io.BytesIO(page.get_pixmap(matrix=fitz.Matrix(z, z), alpha=False).tobytes("png"))).convert("RGB")
 
 
 def main() -> int:

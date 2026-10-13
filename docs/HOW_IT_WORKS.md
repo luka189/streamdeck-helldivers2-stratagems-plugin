@@ -92,8 +92,7 @@ languages/             screenshots for new game languages, see TRANSLATIONS.md
 | `fetch_wiki.py` | `data/stratagems.json` and `data/icons_svg/`, from the wiki |
 | `convert_icons.py` | `data/icons_144/`, the icons as PNG |
 | `make_status_templates.py` | `data/status/`, the words, arrows and digits, cut out of four reference screenshots |
-| `make_png_icons.py` | The key images in `plugin/.../imgs/`, from the SVG files in `tools/icon_src/` |
-| `make_plugin_icons.py` | The plugin and category icons, from the Reinforce icon |
+| `make_png_icons.py` | The images in `plugin/.../imgs/`: the plugin icon, the white category and action icons, and the key images, all from the original drawings in `tools/icon_src/` |
 | `preview_icons.py` | A sheet of the key images side by side, to check them by eye |
 | `capture_burst.py` | A series of full-screen screenshots, for new samples and fixtures |
 | `make_language_examples.py` | The annotated examples of [TRANSLATIONS.md](TRANSLATIONS.md) |
