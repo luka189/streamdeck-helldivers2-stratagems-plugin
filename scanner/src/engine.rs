@@ -1446,6 +1446,7 @@ mod tests {
             e.matcher.read_rows(&col, 1440, (x0, y0), 1.0)
         };
         let open = read(&mut e, "menu_open");
+        let fed = Instant::now(); // the timers are read from here on
         feed_n(&mut e, &open, 2);
         assert_eq!(
             names(&e),
@@ -1463,10 +1464,12 @@ mod tests {
         assert!(feed(&mut e, &closed));
         assert_eq!(view(&e, 3).status, Cooldown);
         assert_eq!(e.loadout().len(), 7, "slots off screen are remembered");
-        // the timers read on menu_open drive the countdowns: Quasar Cannon T-04:50, Warp Pack T-04:48
+        // the timers read on menu_open drive the countdowns: Quasar Cannon T-04:50, Warp Pack T-04:48, at most a
+        // rounding more, less the time gone since they were read (the reads above take seconds in a slow test build)
         for (k, shown) in [(4, 290.0), (5, 288.0)] {
             let (secs, timed) = left(&e, k);
-            assert!(timed && (secs - (shown + TIMER_ROUNDING)).abs() < 1.0, "slot {k}: {secs} s left");
+            let (most, least) = (shown + TIMER_ROUNDING, shown + TIMER_ROUNDING - fed.elapsed().as_secs_f32());
+            assert!(timed && secs <= most + 0.05 && secs >= least - 0.05, "slot {k}: {secs} s left, {least}..{most} expected");
         }
     }
 
