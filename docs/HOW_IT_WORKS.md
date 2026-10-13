@@ -57,7 +57,7 @@ The HUD tells the plugin whether a mission is on: Reinforce's row is always on s
 
 ## The Stream Deck side
 
-`src/bin/hd2-plugin.rs` connects to Stream Deck with the [streamdeck-rs](https://crates.io/crates/streamdeck-rs) crate. Scanning runs on its own thread and sends the loadout to the main loop whenever what a key would show changes; the main loop draws the keys. Stratagem keys are the wiki icon (a PNG) with the progress fill and the badge drawn over it. The radar, the signal icon and the start button are small SVG pictures made on the fly.
+`src/bin/hd2-plugin.rs` connects to Stream Deck with the [streamdeck-rs](https://crates.io/crates/streamdeck-rs) crate. Scanning runs on its own thread and sends the loadout to the main loop whenever what a key would show changes; the main loop draws the keys. Stratagem keys show the stratagem's symbol in a frame like the game's (`data/keys_144/`, made by `tools/make_key_icons.py`), with the progress fill and the badge drawn over it. The game's icons from the wiki are only the reference the matcher compares the screen with; a stratagem without a symbol shows its game icon. The radar, the signal icon and the start button are small SVG pictures made on the fly.
 
 The stratagem list, the icons and the status pictures are built into `hd2-plugin.exe` when it is compiled (`scanner/build.rs`), so the plugin reads no file beside itself: a plugin distributed with DRM protection, as the Elgato Marketplace does, cannot read its own files.
 
@@ -81,6 +81,8 @@ scanner/               the Rust crate (hd-scanner)
 plugin/com.xiaodoudou.helldivers2-stratagems.sdPlugin/   the plugin folder: manifest, key images, settings panel
 data/stratagems.json   name, code, cooldown and icon of every stratagem, from the wiki (this file, icons_144/ and status/ are built into hd2-plugin.exe)
 data/icons_144/        the wiki icons as PNG, what the matcher compares with
+data/symbols/          the stratagem symbols (SVG) the keys show, from nvigneux/Helldivers-2-Stratagems-icons-svg (see its README)
+data/keys_144/         the key pictures: each symbol in its frame, named after the stratagem
 data/status/           the pictures of the status words, the arrows and the timer's digits
 data/icons_svg/        the wiki icons as downloaded, which convert_icons.py renders to data/icons_144/
 tools/                 Python scripts that make the data and the pictures, and the commit check
@@ -92,6 +94,7 @@ languages/             screenshots for new game languages, see TRANSLATIONS.md
 | `fetch_wiki.py` | `data/stratagems.json` and `data/icons_svg/`, from the wiki |
 | `convert_icons.py` | `data/icons_144/`, the icons as PNG |
 | `make_status_templates.py` | `data/status/`, the words, arrows and digits, cut out of four reference screenshots |
+| `make_key_icons.py` | `data/keys_144/`, the key pictures, from the symbols of `data/symbols/`; `--page` writes a page comparing them with the game's icons |
 | `make_png_icons.py` | The images in `plugin/.../imgs/`: the plugin icon, the white category and action icons, and the key images, all from the original drawings in `tools/icon_src/` |
 | `preview_icons.py` | A sheet of the key images side by side, to check them by eye |
 | `capture_burst.py` | A series of full-screen screenshots, for new samples and fixtures |

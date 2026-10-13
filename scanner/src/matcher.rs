@@ -54,6 +54,20 @@ impl Stratagem {
     pub fn icon_path(&self) -> String {
         format!("icons_144/{}", self.png())
     }
+
+    /// The picture its key shows, in the data folder: named after the stratagem (tools/make_key_icons.py), as
+    /// stratagems sharing one game icon can have different symbols. Missing for a stratagem without a symbol.
+    pub fn key_path(&self) -> String {
+        let mut slug = String::new();
+        for c in self.name.chars() {
+            if c.is_ascii_alphanumeric() {
+                slug.push(c);
+            } else if !slug.ends_with('_') {
+                slug.push('_');
+            }
+        }
+        format!("keys_144/{}.png", slug.trim_matches('_'))
+    }
 }
 
 #[derive(Debug, Clone)]

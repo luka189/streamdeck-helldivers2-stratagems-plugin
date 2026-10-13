@@ -70,6 +70,6 @@ A scan captures only the column of stratagem icons and the start of their status
 
 A fan project, not made, endorsed or supported by Arrowhead Game Studios, Sony Interactive Entertainment or Elgato.
 
-Helldivers and Helldivers 2, and everything from the game this plugin shows or uses (the stratagem names, icons, codes and status words), belong to Sony Interactive Entertainment and Arrowhead Game Studios; their copyrights and trademarks stay theirs. They are used here only to show which stratagem is which. Stream Deck and Elgato are trademarks of Corsair. The stratagem list, codes, cooldowns and icons were collected from the [Helldivers Wiki](https://helldivers.wiki.gg/wiki/Stratagems).
+Helldivers and Helldivers 2, and everything from the game this plugin shows or uses (the stratagem names, icons, codes and status words), belong to Sony Interactive Entertainment and Arrowhead Game Studios; their copyrights and trademarks stay theirs. They are used here only to show which stratagem is which. Stream Deck and Elgato are trademarks of Corsair. The stratagem list, codes, cooldowns and icons were collected from the [Helldivers Wiki](https://helldivers.wiki.gg/wiki/Stratagems). The stratagem symbols on the keys are the SVG redrawings of [nvigneux/Helldivers-2-Stratagems-icons-svg](https://github.com/nvigneux/Helldivers-2-Stratagems-icons-svg), made for the Stratagem Hero Trainer.
 
 The plugin's own code and documentation are under the [Apache License 2.0](LICENSE). That license doesn't cover the game's material.

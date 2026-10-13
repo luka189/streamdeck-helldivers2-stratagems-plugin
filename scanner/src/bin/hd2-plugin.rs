@@ -50,12 +50,19 @@ enum Event {
 struct Stratagem {
     name: String,
     code: String,
-    png: Cow<'static, [u8]>, // its icon, as stored
+    png: Cow<'static, [u8]>, // the picture its key shows, as stored
 }
 
-/// The matcher's catalog with each stratagem's icon, read from `data`.
+/// The matcher's catalog with the picture each stratagem's key shows, read from `data`: its symbol framed like the
+/// game's icons (keys_144), or the game's icon itself for a stratagem without a symbol.
 fn catalog(m: &Matcher, data: &Data) -> Result<Vec<Stratagem>, String> {
-    m.catalog.iter().map(|s| Ok(Stratagem { name: s.name.clone(), code: s.code.clone(), png: data.read(&s.icon_path())? })).collect()
+    m.catalog
+        .iter()
+        .map(|s| {
+            let png = data.read(&s.key_path()).or_else(|_| data.read(&s.icon_path()))?;
+            Ok(Stratagem { name: s.name.clone(), code: s.code.clone(), png })
+        })
+        .collect()
 }
 
 static LOG: OnceLock<(Mutex<std::fs::File>, Instant)> = OnceLock::new();
@@ -1035,7 +1042,9 @@ mod tests {
         for (s, from) in c.iter().zip(&m.catalog) {
             assert_eq!((s.name.as_str(), s.code.as_str()), (from.name.as_str(), from.code.as_str()));
             assert!(matches!(s.png, Cow::Borrowed(_)), "{}: built-in icons are not copied", s.name);
-            assert_eq!(&s.png[..], &std::fs::read(data().join(from.icon_path())).unwrap()[..], "{}: not the file in data/", s.name);
+            // the framed symbol when there is one, the game's icon otherwise
+            let file = std::fs::read(data().join(from.key_path())).or_else(|_| std::fs::read(data().join(from.icon_path()))).unwrap();
+            assert_eq!(&s.png[..], &file[..], "{}: not the file in data/", s.name);
             let img = Img::decode_png(&s.png).unwrap_or_else(|e| panic!("{}: {e}", s.name));
             assert_eq!((img.w, img.h), (144, 144), "{}", s.name);
         }
@@ -1197,11 +1206,7 @@ mod tests {
 
         let data = Data::Embedded;
         let mut m = Matcher::load(&data).expect("catalog");
-        let catalog: Vec<Stratagem> = m
-            .catalog
-            .iter()
-            .map(|s| Stratagem { name: s.name.clone(), code: s.code.clone(), png: data.read(&s.icon_path()).expect("icon") })
-            .collect();
+        let catalog = catalog(&m, &data).expect("catalog");
         let idx = |name: &str| catalog.iter().position(|s| s.name == name).unwrap_or_else(|| panic!("no {name}"));
         let (reinforce, sos, resupply) = (idx("Reinforce"), idx("SoS Beacon"), idx("Resupply"));
         let (laser, quasar, warp, frv) =
@@ -1319,11 +1324,7 @@ mod tests {
 
         let data = Data::Embedded;
         let mut m = Matcher::load(&data).expect("catalog");
-        let catalog: Vec<Stratagem> = m
-            .catalog
-            .iter()
-            .map(|s| Stratagem { name: s.name.clone(), code: s.code.clone(), png: data.read(&s.icon_path()).expect("icon") })
-            .collect();
+        let catalog = catalog(&m, &data).expect("catalog");
         let keys = ["scan", "clear", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"];
         let mut p = Plugin {
             keys: HashMap::new(),

@@ -140,10 +140,10 @@ fn lookalike_codes_can_be_told_apart_by_the_code_reader() {
     }
 }
 
-/// What the reader uses from data/: the stratagem list and every file in icons_144/ and status/.
+/// What the plugin uses from data/: the stratagem list and every file in icons_144/, keys_144/ and status/.
 fn data_files() -> Vec<(String, Vec<u8>)> {
     let mut files = vec![("stratagems.json".to_string(), std::fs::read(data().join("stratagems.json")).unwrap())];
-    for dir in ["icons_144", "status"] {
+    for dir in ["icons_144", "keys_144", "status"] {
         for entry in std::fs::read_dir(data().join(dir)).unwrap() {
             let path = entry.unwrap().path();
             files.push((format!("{dir}/{}", path.file_name().unwrap().to_str().unwrap()), std::fs::read(&path).unwrap()));
@@ -172,4 +172,32 @@ fn the_matcher_reads_the_same_catalog_built_in() {
         |m: &Matcher| m.catalog.iter().map(|s| (s.name.clone(), s.code.clone(), s.cooldown.clone(), s.icon.clone())).collect::<Vec<_>>();
     assert_eq!(fields(&built_in), fields(&on_disk));
     assert_eq!(built_in.lookalike_groups(), on_disk.lookalike_groups());
+}
+
+/// Every key picture belongs to a stratagem (named as Stratagem::key_path names it, which tools/make_key_icons.py
+/// mirrors), is 144x144, and all but a few stratagems have one.
+#[test]
+fn every_key_picture_belongs_to_a_stratagem() {
+    let m = Matcher::load(&Data::Dir(data())).expect("catalog");
+    let expected: Vec<String> = m.catalog.iter().map(|s| s.key_path()).collect();
+    let dir = data().join("keys_144");
+    let mut found = 0;
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let rel = format!("keys_144/{}", path.file_name().unwrap().to_str().unwrap());
+        assert!(expected.contains(&rel), "{rel}: no stratagem of that name");
+        let img = Img::load_png(&path).unwrap();
+        assert_eq!((img.w, img.h), (144, 144), "{rel}");
+        found += 1;
+    }
+    assert!(found >= m.catalog.len() - 3, "only {found} of {} stratagems have a key picture", m.catalog.len());
+}
+
+#[test]
+fn key_paths_are_plain_file_names() {
+    let m = Matcher::load(&Data::Dir(data())).expect("catalog");
+    let k = |name: &str| m.catalog.iter().find(|s| s.name == name).unwrap().key_path();
+    assert_eq!(k("AX/LAS-5 Rover"), "keys_144/AX_LAS_5_Rover.png");
+    assert_eq!(k("StA-X3 W.A.S.P. Launcher"), "keys_144/StA_X3_W_A_S_P_Launcher.png");
+    assert_eq!(k("Orbital 120mm HE Barrage"), "keys_144/Orbital_120mm_HE_Barrage.png");
 }
