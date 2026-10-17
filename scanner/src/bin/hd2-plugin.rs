@@ -408,26 +408,39 @@ const BADGE_INK: [f32; 3] = [61.0, 60.0, 39.0];
 
 const BADGE_PAD: (f32, f32) = (7.0, 5.0); // cream margin around the digits in the game, at 1440p
 
-/// Redraw the game's count badge in the icon's bottom-right corner, at the in-game size relative
-/// to the icon (57 px icon at 1440p), smoothed by sampling each key pixel 3x3 times.
+/// Redraw the game's count badge in the icon's bottom-right corner, at the in-game size relative to the icon (57 px
+/// icon at 1440p). A number read from it is drawn with the glyphs at the key's size, cleanly; otherwise the captured
+/// digits are blown up, smoothed by sampling each key pixel 3x3 times.
 fn draw_badge(px: &mut [u8], w: usize, h: usize, b: &hd_scanner::engine::Badge) {
     let s = w as f32 / 57.0;
     let (sw, sh) = (b.w as f32 + 2.0 * BADGE_PAD.0, b.h as f32 + 2.0 * BADGE_PAD.1); // badge size in game pixels
     let (bw, bh) = (((sw * s).round() as usize).min(w), ((sh * s).round() as usize).min(h));
     let (ox, oy) = (w - bw, h - bh);
+    // the digits' place inside the badge, in key pixels
+    let (dx, dy) = ((BADGE_PAD.0 * s).round() as usize, (BADGE_PAD.1 * s).round() as usize);
+    let (dw, dh) = (bw.saturating_sub(2 * dx), bh.saturating_sub(2 * dy));
+    let clean = b.number.as_deref().map(|n| hd_scanner::glyphs::render(n, dw, dh));
     for ty in 0..bh {
         for tx in 0..bw {
-            let mut ink = 0.0f32;
-            for i in 0..3 {
-                for j in 0..3 {
-                    let gx = (tx as f32 + (i as f32 + 0.5) / 3.0) / s - BADGE_PAD.0;
-                    let gy = (ty as f32 + (j as f32 + 0.5) / 3.0) / s - BADGE_PAD.1;
-                    if gx >= 0.0 && gy >= 0.0 && (gx as usize) < b.w && (gy as usize) < b.h {
-                        ink += b.bits[gy as usize * b.w + gx as usize] as u8 as f32;
-                    }
+            let t = match &clean {
+                Some(ink) => {
+                    let inside = (dx..dx + dw).contains(&tx) && (dy..dy + dh).contains(&ty);
+                    if inside { ink[(ty - dy) * dw + tx - dx] } else { 0.0 }
                 }
-            }
-            let t = ink / 9.0;
+                None => {
+                    let mut ink = 0.0f32;
+                    for i in 0..3 {
+                        for j in 0..3 {
+                            let gx = (tx as f32 + (i as f32 + 0.5) / 3.0) / s - BADGE_PAD.0;
+                            let gy = (ty as f32 + (j as f32 + 0.5) / 3.0) / s - BADGE_PAD.1;
+                            if gx >= 0.0 && gy >= 0.0 && (gx as usize) < b.w && (gy as usize) < b.h {
+                                ink += b.bits[gy as usize * b.w + gx as usize] as u8 as f32;
+                            }
+                        }
+                    }
+                    ink / 9.0
+                }
+            };
             let p = &mut px[((oy + ty) * w + ox + tx) * 4..((oy + ty) * w + ox + tx) * 4 + 4];
             for c in 0..3 {
                 p[c] = (BADGE_BG[c] * (1.0 - t) + BADGE_INK[c] * t) as u8;
@@ -1389,7 +1402,7 @@ mod tests {
     fn icon_png_redraws_the_badge_in_the_corner() {
         let (w, h, src) = decode(&icon());
         // a 3x5 block of ink stands in for a digit
-        let badge = Badge { hash: 7, w: 3, h: 5, bits: Arc::new(vec![true; 15]) };
+        let badge = Badge { hash: 7, w: 3, h: 5, bits: Arc::new(vec![true; 15]), number: None };
         let (_, _, px) = decode(&icon_png(&icon(), &sv(0, Status::Ready, 0.0, Some(badge))).expect("drawn"));
         // (3 + 2 * 7) x (5 + 2 * 5) game pixels at 144 / 57 key pixels each
         let (bw, bh) = (43, 38);
@@ -1406,6 +1419,26 @@ mod tests {
         assert_eq!(at(w - bw, h - bh)[..3], BADGE_BG.map(|c| c as u8), "margin is the badge colour");
         assert_eq!(at(w - 1, h - 1)[..3], BADGE_BG.map(|c| c as u8));
         assert_eq!(at(w - bw + 21, h - bh + 19)[..3], BADGE_INK.map(|c| c as u8), "digit ink in the middle");
+    }
+
+    #[test]
+    fn a_badge_read_as_a_number_is_drawn_with_clean_digits() {
+        let (w, h, src) = decode(&icon());
+        // a "1" of the game's size (8x14 at 1440p): drawn as the glyph, not as the blocks of the capture
+        let badge = Badge { hash: 1, w: 8, h: 14, bits: Arc::new(vec![false; 112]), number: Some("1".into()) };
+        let (_, _, px) = decode(&icon_png(&icon(), &sv(0, Status::Ready, 0.0, Some(badge))).expect("drawn"));
+        let at = |x: usize, y: usize| -> [u8; 3] { std::array::from_fn(|c| px[(y * w + x) * 4 + c]) };
+        let (bw, bh) = (((8.0 + 14.0) * 144.0 / 57.0_f32).round() as usize, ((14.0 + 10.0) * 144.0 / 57.0_f32).round() as usize);
+        let (ox, oy) = (w - bw, h - bh);
+        assert_eq!(at(ox + 1, oy + 1), BADGE_BG.map(|c| c as u8), "the badge's margin");
+        // the 1's stem, down the middle of the digit's place, is ink; beside it, cream
+        let (dx, dy) = ((7.0 * 144.0 / 57.0_f32).round() as usize, (5.0 * 144.0 / 57.0_f32).round() as usize);
+        let stem_x = (ox + dx..w - dx).find(|&x| at(x, oy + dy + 18) == BADGE_INK.map(|c| c as u8)).expect("ink across the stem");
+        assert!((stem_x as f32) > (ox + dx) as f32 + 4.0, "the stem, not the box's edge: {stem_x}");
+        // partly inked pixels at the stem's edges: smooth, not blocky
+        let row: Vec<[u8; 3]> = (ox + dx..w - dx).map(|x| at(x, oy + dy + 18)).collect();
+        assert!(row.iter().any(|p| p[0] > BADGE_INK[0] as u8 + 10 && p[0] < BADGE_BG[0] as u8 - 10), "antialiased edges");
+        let _ = src;
     }
 
     #[test]

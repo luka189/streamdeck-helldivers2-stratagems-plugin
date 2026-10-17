@@ -801,7 +801,7 @@ mod tests {
     }
 
     fn badge(hash: u64) -> Badge {
-        Badge { hash, w: 1, h: 1, bits: Arc::new(vec![true]) }
+        Badge { hash, w: 1, h: 1, bits: Arc::new(vec![true]), number: None }
     }
 
     /// An instant `secs` seconds ago.

@@ -4,6 +4,10 @@ What changed in each version of the plugin, newest first. The versions follow [s
 
 ## [Unreleased]
 
+### Changed
+
+- **Sharp numbers on the badges.** The reinforcements left and the uses of a stratagem are read as numbers and drawn with clean digits in the game's style, instead of the captured pixels blown up, which looked blocky. A number that doesn't read clearly is still shown as captured.
+
 ## [0.5.2] - 2026-10-13
 
 ### Changed

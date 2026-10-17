@@ -353,6 +353,40 @@ fn a_warm_row_cache_reads_like_a_fresh_one() {
     }
 }
 
+/// Every count badge in the frames is read as the number it shows, so the keys can draw it cleanly.
+#[test]
+fn badges_read_as_their_numbers() {
+    let mut bad = Vec::new();
+    for f in FRAMES {
+        for seen in f.rows.iter().filter(|s| s.badge.is_some()) {
+            let row = reads()[f.name].rows.iter().find(|r| r.slot == seen.slot);
+            let read = row.and_then(|r| r.badge.as_ref()).and_then(|b| hd_scanner::glyphs::read(&b.bits, b.w, b.h));
+            let want = seen.badge.map(|d| d.to_string());
+            if read != want {
+                bad.push(format!("{} slot {}: read {read:?}, shows {want:?}", f.name, seen.slot));
+            }
+        }
+    }
+    let mut m = Matcher::load(&Data::Dir(data_dir())).expect("catalog");
+    let col = Img::load_png(&fixture_path("super_destroyer_unavailable")).expect("fixture");
+    for (slot, want) in [(0, "9"), (1, "1"), (4, "2")] {
+        let rows = m.read_rows(&col, FRAME_H, origin(), 1.0);
+        let read =
+            rows.iter().find(|r| r.slot == slot).and_then(|r| r.badge.as_ref()).and_then(|b| hd_scanner::glyphs::read(&b.bits, b.w, b.h));
+        if read.as_deref() != Some(want) {
+            bad.push(format!("super_destroyer_unavailable slot {slot}: read {read:?}, shows {want}"));
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "{}",
+        bad.join(
+            "
+"
+        )
+    );
+}
+
 /// While the Super Destroyer is away, the game greys out every stratagem it delivers and their status line reads
 /// "Super Destroyer Unavailable": they are unavailable, not as they were before (the Laser Cannon stayed ready).
 #[test]
