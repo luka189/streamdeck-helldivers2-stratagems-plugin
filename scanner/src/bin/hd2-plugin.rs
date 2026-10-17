@@ -1684,7 +1684,7 @@ mod tests {
         let (open, activating) = (badges("menu_open.png"), badges("menu_activating.png"));
         let laser_uses = |left: u8| if left == 3 { activating.get(&laser).cloned() } else { open.get(&laser).cloned() };
 
-        let keys = ["scan", "clear", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"];
+        let keys = ["scan", "clear", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "setup"];
         let mut p = Plugin {
             keys: HashMap::new(),
             loadout: vec![],
@@ -1697,9 +1697,11 @@ mod tests {
         };
         p.register(SCAN, "scan", &json!({}));
         p.register(CLEAR, "clear", &json!({}));
-        for k in 1..=8 {
+        for k in 1..=7 {
             p.register(SLOT, &format!("s{k}"), &json!({ "slot": k }));
         }
+        // the loadout's second and third stratagems: the Quasar Cannon and the Warp Pack
+        p.register(SETUP, "setup", &json!({ "loadout": [2, 3] }));
         let mut frames: Vec<Value> = Vec::new();
         let mut shoot = |p: &mut Plugin, pressed: Option<usize>| {
             p.frame += 1;
@@ -1735,8 +1737,8 @@ mod tests {
         for _ in 0..8 {
             shoot(&mut p, None);
         }
-        // the Orbital Laser, then the Warp Pack, are called in: on their way (fill from the top), then cooling
-        // down (fill from the bottom, sped up here), then ready again
+        // the Orbital Laser is called in from its key, then the Setup key calls the Quasar Cannon and, a throw later,
+        // the Warp Pack: each on its way (fill from the top), then cooling down (fill from the bottom, sped up here)
         let flight = |t: i32, start: i32, flying: i32, cooling: i32| -> Option<(Status, f32)> {
             let t = t - start;
             if t < 0 {
@@ -1749,17 +1751,18 @@ mod tests {
                 None
             }
         };
-        for t in 0..46 {
-            let (l, w) = (flight(t, 0, 8, 24), flight(t, 6, 6, 30));
+        for t in 0..56 {
+            let (l, q, w) = (flight(t, 0, 8, 24), flight(t, 10, 6, 28), flight(t, 15, 6, 30));
             let badge = laser_uses(if t >= 8 { 2 } else { 3 });
             loadout[3] = Some(l.map_or(sv(laser, Status::Ready, 0.0, badge.clone()), |(s, f)| sv(laser, s, f, badge.clone())));
+            loadout[4] = Some(q.map_or(sv(quasar, Status::Ready, 0.0, None), |(s, f)| sv(quasar, s, f, None)));
             loadout[5] = Some(w.map_or(sv(warp, Status::Ready, 0.0, None), |(s, f)| sv(warp, s, f, None)));
             p.loadout = loadout.clone();
             shoot(
                 &mut p,
                 match t {
                     0 => Some(5),
-                    6 => Some(7),
+                    10 => Some(9),
                     _ => None,
                 },
             );
@@ -1788,7 +1791,7 @@ mod tests {
         let data = Data::Embedded;
         let mut m = Matcher::load(&data).expect("catalog");
         let catalog = catalog(&m);
-        let keys = ["scan", "clear", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"];
+        let keys = ["scan", "clear", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "setup"];
         let mut p = Plugin {
             keys: HashMap::new(),
             loadout: vec![],
@@ -1801,9 +1804,11 @@ mod tests {
         };
         p.register(SCAN, "scan", &json!({}));
         p.register(CLEAR, "clear", &json!({}));
-        for k in 1..=8 {
+        for k in 1..=7 {
             p.register(SLOT, &format!("s{k}"), &json!({ "slot": k }));
         }
+        // the loadout's second and third stratagems: the Quasar Cannon and the Warp Pack
+        p.register(SETUP, "setup", &json!({ "loadout": [2, 3] }));
         let shoot = |p: &mut Plugin| -> Vec<String> { keys.iter().map(|k| image_of(&p.paint(k)[0]).to_string()).collect() };
 
         let mut scenes = serde_json::Map::new();
@@ -1830,6 +1835,38 @@ mod tests {
         (p.loadout, p.standby, p.state) = (vec![], true, GameState::Missing);
         scenes.insert("standby".into(), json!(shoot(&mut p)));
 
+        // a press of the Setup key: both ready, the Quasar Cannon on its way, then the Warp Pack on its way too
+        let idx = |name: &str| p.catalog.iter().position(|s| s.name == name).unwrap_or_else(|| panic!("no {name}"));
+        let (quasar, warp) = (idx("LAS-99 Quasar Cannon"), idx("LIFT-182 Warp Pack"));
+        let menu: Vec<usize> =
+            ["Reinforce", "SoS Beacon", "Resupply", "Orbital Laser", "LAS-99 Quasar Cannon", "LIFT-182 Warp Pack", "M-102 Gunner FRV"]
+                .iter()
+                .map(|n| idx(n))
+                .collect();
+        (p.standby, p.state) = (false, GameState::Mission);
+        let mut setup = serde_json::Map::new();
+        for (name, q, w) in [
+            ("ready", (Status::Ready, 0.0), (Status::Ready, 0.0)),
+            ("first", (Status::Active, 0.5), (Status::Ready, 0.0)),
+            ("both", (Status::Active, 0.9), (Status::Active, 0.4)),
+        ] {
+            p.loadout = menu
+                .iter()
+                .map(|&i| {
+                    let (status, fill) = if i == quasar {
+                        q
+                    } else if i == warp {
+                        w
+                    } else {
+                        (Status::Ready, 0.0)
+                    };
+                    Some(sv(i, status, fill, None))
+                })
+                .collect();
+            setup.insert(name.into(), json!(image_of(&p.paint("setup")[0])));
+        }
+        p.loadout = vec![];
+
         let mut scan = serde_json::Map::new();
         for (name, standby, state) in [
             ("start", true, GameState::Missing),
@@ -1844,7 +1881,8 @@ mod tests {
         let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/demo");
         std::fs::create_dir_all(&out).expect("target/demo");
         let file = out.join("scenes.json");
-        std::fs::write(&file, serde_json::to_vec(&json!({ "columns": 5, "scenes": scenes, "scan": scan })).unwrap()).expect("write scenes");
+        std::fs::write(&file, serde_json::to_vec(&json!({ "columns": 5, "scenes": scenes, "scan": scan, "setup": setup })).unwrap())
+            .expect("write scenes");
         println!("scenes written to {}", file.display());
     }
 }
