@@ -133,14 +133,15 @@ pub struct Row {
     pub timer: Option<u32>,
 }
 
-/// The count badge's digits as a mask (true = dark digit pixel), trimmed to the digits; the cream
-/// box is redrawn around them on the key.
+/// The count badge's digits as a mask (true = dark digit pixel), trimmed to the digits, and the number they show when
+/// it reads clearly (see glyphs::read); the cream box is redrawn around them on the key.
 #[derive(Clone, Debug)]
 pub struct Badge {
     pub hash: u64,
     pub w: usize,
     pub h: usize,
     pub bits: std::sync::Arc<Vec<bool>>,
+    pub number: Option<String>,
 }
 
 impl PartialEq for Badge {
@@ -215,7 +216,8 @@ fn read_badge(col: &Img, f: f64, top: f64, origin: (usize, usize)) -> Option<Bad
     for &b in &bits {
         hash = (hash ^ b as u64).wrapping_mul(0x100000001b3);
     }
-    Some(Badge { hash, w, h, bits: std::sync::Arc::new(bits) })
+    let number = crate::glyphs::read(&bits, w, h);
+    Some(Badge { hash, w, h, bits: std::sync::Arc::new(bits), number })
 }
 
 /// Masked, zero-mean (per channel), unit-norm template pixels.

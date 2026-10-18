@@ -36,7 +36,7 @@ The rows of the menu sit at fixed places. At 2560x1440 the first icon's top is a
 4. when the best two are too close, for instance because the progress fill covers half the icon, measures the fill and scores again: the clear part against the clean icon, the covered part against the icon as the fill draws it;
 5. reads the status line: either a word (Ready, Cooldown, Unavailable, Impact, Inbound, Activating), matched against greyscale pictures of the English words, or the arrows of the code. After *Cooldown* and *Inbound* it reads the timer's digits too (`T-01:23`);
 6. measures the progress fill, from the pixels that differ from the clean icon: rising from the bottom while cooling down, coming down from the top while in flight;
-7. reads the count badge, which always sits at the same place against the icon's bottom-right corner and grows leftwards with more digits. It is found from its cream margins and the dark digits inside, not from its colour alone, which a bright sky can share, and its digits are kept as a mask to draw on the key.
+7. reads the count badge, which always sits at the same place against the icon's bottom-right corner and grows leftwards with more digits. It is found from its cream margins and the dark digits inside, not from its colour alone, which a bright sky can share. Its digits are kept as a mask and read as a number, by comparing each with digits drawn in the game's font style (`src/glyphs.rs`): the key draws a number read clearly with those digits, sharp at its size, and the mask otherwise.
 
 A few stratagems share one icon, such as SSSD Delivery and Upload Data. For those, the matcher reads the arrow code on the row and picks the stratagem whose code it is.
 
@@ -52,7 +52,7 @@ The icons are the game's own. `data/icons/` holds the texture the game keeps for
 
 ## Following the game over time
 
-`engine.rs` turns single readings into what the keys show. A stratagem must be seen in the same slot for a few scans in a row before its key shows it (*Confirm after*), and another stratagem must be read there four times in a row to take the slot over. Status changes are confirmed the same way.
+`engine.rs` turns single readings into what the keys show. A stratagem must be seen in the same slot for a few scans in a row before its key shows it (*Confirm after*), and another stratagem must be read there four times in a row to take the slot over. Status changes are confirmed the same way. The open menu is an exception, since it shows every slot: read the same twice in a row, it lays all the slots out at once. That matters when the game moves the menu along, as it does when a mission hands out a stratagem (SEAF Artillery comes in after Resupply) or takes one back (a used SOS Beacon): every stratagem goes to its new slot with its cooldown and badge, instead of the slots following one by one and mixing old and new places meanwhile.
 
 With the menu closed, the HUD shows much less: Reinforce, the rows of call-ins in flight, and a notice when a cooldown ends. The engine fills the gaps:
 

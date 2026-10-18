@@ -309,7 +309,8 @@ pub struct Engine {
     grabber: Grabber,
     slots: BTreeMap<usize, Slot>, // menu slot -> what it holds
     pending: HashMap<(usize, usize), u32>,
-    learned: HashMap<usize, f32>, // stratagem -> cooldown seconds measured this session
+    layout: Option<(Vec<(usize, usize)>, u32)>, // the open menu last seen as (slot, stratagem), and scans in a row
+    learned: HashMap<usize, f32>,               // stratagem -> cooldown seconds measured this session
     pub focused: bool,
     pub scan_ms: f64,
     pub last_error: Option<String>,       // why the last scan could not read the game
@@ -346,6 +347,7 @@ impl Engine {
             grabber: Grabber::new(),
             slots: BTreeMap::new(),
             pending: HashMap::new(),
+            layout: None,
             learned: HashMap::new(),
             focused: false,
             scan_ms: 0.0,
@@ -519,6 +521,40 @@ impl Engine {
         true
     }
 
+    /// The rows' layout as (slot, stratagem) when they are the open menu: every slot from the first on, at least
+    /// MENU_OPEN_ROWS of them, each read surely, starting with Reinforce, which every mission lists first.
+    fn open_menu(&self, rows: &[Row]) -> Option<Vec<(usize, usize)>> {
+        let whole = rows.len() >= MENU_OPEN_ROWS && rows.iter().enumerate().all(|(k, r)| r.slot == k && r.sure);
+        let reinforce = rows.first().is_some_and(|r| self.matcher.catalog[r.index].name == "Reinforce");
+        (whole && reinforce).then(|| rows.iter().map(|r| (r.slot, r.index)).collect())
+    }
+
+    /// Lay the slots out as the open menu shows them (`rows`, see open_menu): each stratagem goes to its slot with
+    /// what it has been showing (its cooldown, timer and badge), one the menu has just added comes in, and one it no
+    /// longer lists goes. The game moves the menu along when a mission hands out a stratagem (SEAF Artillery comes in
+    /// after Resupply) or takes one back (a used SOS Beacon), which slot-by-slot readings would follow only stratagem
+    /// by stratagem, mixing old and new places meanwhile. Returns whether the layout changed.
+    fn relayout(&mut self, rows: &[Row]) -> bool {
+        let now: Vec<(usize, usize)> = self.slots.iter().map(|(&k, s)| (k, s.index)).collect();
+        let shown: Vec<(usize, usize)> = rows.iter().map(|r| (r.slot, r.index)).collect();
+        if now == shown {
+            return false;
+        }
+        let mut by_stratagem: HashMap<usize, Slot> = std::mem::take(&mut self.slots).into_values().map(|s| (s.index, s)).collect();
+        for r in rows {
+            let mut slot = match by_stratagem.remove(&r.index) {
+                Some(s) => s,
+                None => Slot::new(r, self.cooldown_s(r.index)),
+            };
+            (slot.prefilled, slot.challenger, slot.sure) = (false, None, true);
+            slot.score = slot.score.max(r.score);
+            self.slots.insert(r.slot, slot);
+        }
+        self.pending.clear();
+        self.matcher.reset(); // its per-slot memory of where each icon sat no longer holds
+        true
+    }
+
     /// Update status and progress of slots whose row was just seen holding the stratagem we already know.
     fn note_statuses(&mut self, rows: &[Row], need: u32) -> bool {
         let mut changed = false;
@@ -593,9 +629,23 @@ impl Engine {
             }
         }
         self.scan_ms = t.elapsed().as_secs_f64() * 1000.0;
+        // the open menu, read the same on confirm_scans scans in a row, lays the slots out as it shows them
+        let mut changed = false;
+        match self.open_menu(rows) {
+            Some(layout) => {
+                let n = match &self.layout {
+                    Some((seen, n)) if *seen == layout => n + 1,
+                    _ => 1,
+                };
+                self.layout = Some((layout, n));
+                if n >= cfg.confirm_scans {
+                    changed |= self.relayout(rows);
+                }
+            }
+            None => self.layout = None,
+        }
         let seen: HashMap<(usize, usize), &Row> = rows.iter().map(|r| ((r.slot, r.index), r)).collect();
         self.pending.retain(|k, _| seen.contains_key(k));
-        let mut changed = false;
         for (key, r) in &seen {
             let n = self.pending.entry(*key).or_default();
             *n += 1;
@@ -703,6 +753,9 @@ impl Engine {
     /// of this mission and goes. Returns whether the loadout changed.
     fn menu_read(&mut self, reads: &[Vec<Row>]) -> bool {
         let mut changed = false;
+        if let Some(open) = reads.iter().rev().find(|rows| self.open_menu(rows).is_some()) {
+            changed |= self.relayout(open);
+        }
         for r in reads.iter().flatten().filter(|r| r.sure) {
             changed |= self.set_slot(r);
         }
@@ -801,7 +854,7 @@ mod tests {
     }
 
     fn badge(hash: u64) -> Badge {
-        Badge { hash, w: 1, h: 1, bits: Arc::new(vec![true]) }
+        Badge { hash, w: 1, h: 1, bits: Arc::new(vec![true]), number: None }
     }
 
     /// An instant `secs` seconds ago.
@@ -1424,6 +1477,63 @@ mod tests {
         assert!(e.mission_expected());
         e.card_seen = Some(ago(MISSION_EXPECTED.as_secs_f32() + 1.0));
         assert!(!e.mission_expected(), "too long ago");
+    }
+
+    #[test]
+    fn the_open_menu_moves_the_slots_along_when_a_mission_hands_out_a_stratagem() {
+        let mut e = engine();
+        let before = ["Reinforce", "Resupply", "Orbital Laser", "LAS-99 Quasar Cannon", "AX/LAS-5 Rover", "EXO-49 Emancipator Exosuit"];
+        let rows = menu(&e, &before);
+        feed_n(&mut e, &rows, 2);
+        assert_eq!(names(&e), before);
+        // the Quasar Cannon cools down, its timer read
+        let quasar = idx(&e, "LAS-99 Quasar Cannon");
+        let reinforce = idx(&e, "Reinforce");
+        feed_n(&mut e, &[row(reinforce, 0, Status::Ready), cooling(quasar, 3, 0.5, Some(120))], 2);
+        assert_eq!(view(&e, 3).status, Status::Cooldown);
+        // SEAF Artillery comes in after Resupply: everything after it moves along at once, keeping its state
+        let after = [
+            "Reinforce",
+            "Resupply",
+            "SEAF Artillery",
+            "Orbital Laser",
+            "LAS-99 Quasar Cannon",
+            "AX/LAS-5 Rover",
+            "EXO-49 Emancipator Exosuit",
+        ];
+        let mut rows = menu(&e, &after);
+        rows[4] = cooling(quasar, 4, 0.5, Some(118));
+        assert!(!feed(&mut e, &rows) || names(&e) == before, "one reading of the new layout is not enough");
+        assert!(feed(&mut e, &rows));
+        assert_eq!(names(&e), after);
+        let (left, timed) = left(&e, 4);
+        assert!(timed && left > 100.0, "the Quasar Cannon kept its cooldown: {left} s");
+        // a used SOS Beacon leaves the menu: the slots close up
+        let mut e = engine();
+        let with_sos = ["Reinforce", "SoS Beacon", "Resupply", "Orbital Laser", "LAS-99 Quasar Cannon"];
+        let rows = menu(&e, &with_sos);
+        feed_n(&mut e, &rows, 2);
+        let without = ["Reinforce", "Resupply", "Orbital Laser", "LAS-99 Quasar Cannon"];
+        let rows = menu(&e, &without);
+        feed_n(&mut e, &rows, 2);
+        assert_eq!(names(&e), without);
+    }
+
+    #[test]
+    fn notices_of_the_closed_hud_lay_nothing_out() {
+        let mut e = engine();
+        let open = ["Reinforce", "SoS Beacon", "Resupply", "Orbital Laser", "LAS-99 Quasar Cannon"];
+        let rows = menu(&e, &open);
+        feed_n(&mut e, &rows, 2);
+        // the closed HUD: Reinforce, and a notice of the Quasar Cannon at its own place, with a gap before it
+        let closed = [row(idx(&e, "Reinforce"), 0, Status::Unknown), row(idx(&e, "LAS-99 Quasar Cannon"), 4, Status::Ready)];
+        feed_n(&mut e, &closed, 3);
+        assert_eq!(names(&e), open, "a closed HUD is no layout");
+        // rows not read surely are no layout either
+        let mut unsure = menu(&e, &["Reinforce", "Resupply", "Orbital Laser", "LAS-99 Quasar Cannon"]);
+        unsure.iter_mut().for_each(|r| r.sure = false);
+        feed_n(&mut e, &unsure, 2);
+        assert_eq!(names(&e)[1], "SoS Beacon");
     }
 
     #[test]

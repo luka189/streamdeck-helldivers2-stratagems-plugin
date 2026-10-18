@@ -408,26 +408,39 @@ const BADGE_INK: [f32; 3] = [61.0, 60.0, 39.0];
 
 const BADGE_PAD: (f32, f32) = (7.0, 5.0); // cream margin around the digits in the game, at 1440p
 
-/// Redraw the game's count badge in the icon's bottom-right corner, at the in-game size relative
-/// to the icon (57 px icon at 1440p), smoothed by sampling each key pixel 3x3 times.
+/// Redraw the game's count badge in the icon's bottom-right corner, at the in-game size relative to the icon (57 px
+/// icon at 1440p). A number read from it is drawn with the glyphs at the key's size, cleanly; otherwise the captured
+/// digits are blown up, smoothed by sampling each key pixel 3x3 times.
 fn draw_badge(px: &mut [u8], w: usize, h: usize, b: &hd_scanner::engine::Badge) {
     let s = w as f32 / 57.0;
     let (sw, sh) = (b.w as f32 + 2.0 * BADGE_PAD.0, b.h as f32 + 2.0 * BADGE_PAD.1); // badge size in game pixels
     let (bw, bh) = (((sw * s).round() as usize).min(w), ((sh * s).round() as usize).min(h));
     let (ox, oy) = (w - bw, h - bh);
+    // the digits' place inside the badge, in key pixels
+    let (dx, dy) = ((BADGE_PAD.0 * s).round() as usize, (BADGE_PAD.1 * s).round() as usize);
+    let (dw, dh) = (bw.saturating_sub(2 * dx), bh.saturating_sub(2 * dy));
+    let clean = b.number.as_deref().map(|n| hd_scanner::glyphs::render(n, dw, dh));
     for ty in 0..bh {
         for tx in 0..bw {
-            let mut ink = 0.0f32;
-            for i in 0..3 {
-                for j in 0..3 {
-                    let gx = (tx as f32 + (i as f32 + 0.5) / 3.0) / s - BADGE_PAD.0;
-                    let gy = (ty as f32 + (j as f32 + 0.5) / 3.0) / s - BADGE_PAD.1;
-                    if gx >= 0.0 && gy >= 0.0 && (gx as usize) < b.w && (gy as usize) < b.h {
-                        ink += b.bits[gy as usize * b.w + gx as usize] as u8 as f32;
-                    }
+            let t = match &clean {
+                Some(ink) => {
+                    let inside = (dx..dx + dw).contains(&tx) && (dy..dy + dh).contains(&ty);
+                    if inside { ink[(ty - dy) * dw + tx - dx] } else { 0.0 }
                 }
-            }
-            let t = ink / 9.0;
+                None => {
+                    let mut ink = 0.0f32;
+                    for i in 0..3 {
+                        for j in 0..3 {
+                            let gx = (tx as f32 + (i as f32 + 0.5) / 3.0) / s - BADGE_PAD.0;
+                            let gy = (ty as f32 + (j as f32 + 0.5) / 3.0) / s - BADGE_PAD.1;
+                            if gx >= 0.0 && gy >= 0.0 && (gx as usize) < b.w && (gy as usize) < b.h {
+                                ink += b.bits[gy as usize * b.w + gx as usize] as u8 as f32;
+                            }
+                        }
+                    }
+                    ink / 9.0
+                }
+            };
             let p = &mut px[((oy + ty) * w + ox + tx) * 4..((oy + ty) * w + ox + tx) * 4 + 4];
             for c in 0..3 {
                 p[c] = (BADGE_BG[c] * (1.0 - t) + BADGE_INK[c] * t) as u8;
@@ -1389,7 +1402,7 @@ mod tests {
     fn icon_png_redraws_the_badge_in_the_corner() {
         let (w, h, src) = decode(&icon());
         // a 3x5 block of ink stands in for a digit
-        let badge = Badge { hash: 7, w: 3, h: 5, bits: Arc::new(vec![true; 15]) };
+        let badge = Badge { hash: 7, w: 3, h: 5, bits: Arc::new(vec![true; 15]), number: None };
         let (_, _, px) = decode(&icon_png(&icon(), &sv(0, Status::Ready, 0.0, Some(badge))).expect("drawn"));
         // (3 + 2 * 7) x (5 + 2 * 5) game pixels at 144 / 57 key pixels each
         let (bw, bh) = (43, 38);
@@ -1406,6 +1419,26 @@ mod tests {
         assert_eq!(at(w - bw, h - bh)[..3], BADGE_BG.map(|c| c as u8), "margin is the badge colour");
         assert_eq!(at(w - 1, h - 1)[..3], BADGE_BG.map(|c| c as u8));
         assert_eq!(at(w - bw + 21, h - bh + 19)[..3], BADGE_INK.map(|c| c as u8), "digit ink in the middle");
+    }
+
+    #[test]
+    fn a_badge_read_as_a_number_is_drawn_with_clean_digits() {
+        let (w, h, src) = decode(&icon());
+        // a "1" of the game's size (8x14 at 1440p): drawn as the glyph, not as the blocks of the capture
+        let badge = Badge { hash: 1, w: 8, h: 14, bits: Arc::new(vec![false; 112]), number: Some("1".into()) };
+        let (_, _, px) = decode(&icon_png(&icon(), &sv(0, Status::Ready, 0.0, Some(badge))).expect("drawn"));
+        let at = |x: usize, y: usize| -> [u8; 3] { std::array::from_fn(|c| px[(y * w + x) * 4 + c]) };
+        let (bw, bh) = (((8.0 + 14.0) * 144.0 / 57.0_f32).round() as usize, ((14.0 + 10.0) * 144.0 / 57.0_f32).round() as usize);
+        let (ox, oy) = (w - bw, h - bh);
+        assert_eq!(at(ox + 1, oy + 1), BADGE_BG.map(|c| c as u8), "the badge's margin");
+        // the 1's stem, down the middle of the digit's place, is ink; beside it, cream
+        let (dx, dy) = ((7.0 * 144.0 / 57.0_f32).round() as usize, (5.0 * 144.0 / 57.0_f32).round() as usize);
+        let stem_x = (ox + dx..w - dx).find(|&x| at(x, oy + dy + 18) == BADGE_INK.map(|c| c as u8)).expect("ink across the stem");
+        assert!((stem_x as f32) > (ox + dx) as f32 + 4.0, "the stem, not the box's edge: {stem_x}");
+        // partly inked pixels at the stem's edges: smooth, not blocky
+        let row: Vec<[u8; 3]> = (ox + dx..w - dx).map(|x| at(x, oy + dy + 18)).collect();
+        assert!(row.iter().any(|p| p[0] > BADGE_INK[0] as u8 + 10 && p[0] < BADGE_BG[0] as u8 - 10), "antialiased edges");
+        let _ = src;
     }
 
     #[test]
@@ -1651,7 +1684,7 @@ mod tests {
         let (open, activating) = (badges("menu_open.png"), badges("menu_activating.png"));
         let laser_uses = |left: u8| if left == 3 { activating.get(&laser).cloned() } else { open.get(&laser).cloned() };
 
-        let keys = ["scan", "clear", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"];
+        let keys = ["scan", "clear", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "setup"];
         let mut p = Plugin {
             keys: HashMap::new(),
             loadout: vec![],
@@ -1664,9 +1697,11 @@ mod tests {
         };
         p.register(SCAN, "scan", &json!({}));
         p.register(CLEAR, "clear", &json!({}));
-        for k in 1..=8 {
+        for k in 1..=7 {
             p.register(SLOT, &format!("s{k}"), &json!({ "slot": k }));
         }
+        // the loadout's second and third stratagems: the Quasar Cannon and the Warp Pack
+        p.register(SETUP, "setup", &json!({ "loadout": [2, 3] }));
         let mut frames: Vec<Value> = Vec::new();
         let mut shoot = |p: &mut Plugin, pressed: Option<usize>| {
             p.frame += 1;
@@ -1702,8 +1737,8 @@ mod tests {
         for _ in 0..8 {
             shoot(&mut p, None);
         }
-        // the Orbital Laser, then the Warp Pack, are called in: on their way (fill from the top), then cooling
-        // down (fill from the bottom, sped up here), then ready again
+        // the Orbital Laser is called in from its key, then the Setup key calls the Quasar Cannon and, a throw later,
+        // the Warp Pack: each on its way (fill from the top), then cooling down (fill from the bottom, sped up here)
         let flight = |t: i32, start: i32, flying: i32, cooling: i32| -> Option<(Status, f32)> {
             let t = t - start;
             if t < 0 {
@@ -1716,17 +1751,18 @@ mod tests {
                 None
             }
         };
-        for t in 0..46 {
-            let (l, w) = (flight(t, 0, 8, 24), flight(t, 6, 6, 30));
+        for t in 0..56 {
+            let (l, q, w) = (flight(t, 0, 8, 24), flight(t, 10, 6, 28), flight(t, 15, 6, 30));
             let badge = laser_uses(if t >= 8 { 2 } else { 3 });
             loadout[3] = Some(l.map_or(sv(laser, Status::Ready, 0.0, badge.clone()), |(s, f)| sv(laser, s, f, badge.clone())));
+            loadout[4] = Some(q.map_or(sv(quasar, Status::Ready, 0.0, None), |(s, f)| sv(quasar, s, f, None)));
             loadout[5] = Some(w.map_or(sv(warp, Status::Ready, 0.0, None), |(s, f)| sv(warp, s, f, None)));
             p.loadout = loadout.clone();
             shoot(
                 &mut p,
                 match t {
                     0 => Some(5),
-                    6 => Some(7),
+                    10 => Some(9),
                     _ => None,
                 },
             );
@@ -1755,7 +1791,7 @@ mod tests {
         let data = Data::Embedded;
         let mut m = Matcher::load(&data).expect("catalog");
         let catalog = catalog(&m);
-        let keys = ["scan", "clear", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"];
+        let keys = ["scan", "clear", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "setup"];
         let mut p = Plugin {
             keys: HashMap::new(),
             loadout: vec![],
@@ -1768,9 +1804,11 @@ mod tests {
         };
         p.register(SCAN, "scan", &json!({}));
         p.register(CLEAR, "clear", &json!({}));
-        for k in 1..=8 {
+        for k in 1..=7 {
             p.register(SLOT, &format!("s{k}"), &json!({ "slot": k }));
         }
+        // the loadout's second and third stratagems: the Quasar Cannon and the Warp Pack
+        p.register(SETUP, "setup", &json!({ "loadout": [2, 3] }));
         let shoot = |p: &mut Plugin| -> Vec<String> { keys.iter().map(|k| image_of(&p.paint(k)[0]).to_string()).collect() };
 
         let mut scenes = serde_json::Map::new();
@@ -1797,6 +1835,38 @@ mod tests {
         (p.loadout, p.standby, p.state) = (vec![], true, GameState::Missing);
         scenes.insert("standby".into(), json!(shoot(&mut p)));
 
+        // a press of the Setup key: both ready, the Quasar Cannon on its way, then the Warp Pack on its way too
+        let idx = |name: &str| p.catalog.iter().position(|s| s.name == name).unwrap_or_else(|| panic!("no {name}"));
+        let (quasar, warp) = (idx("LAS-99 Quasar Cannon"), idx("LIFT-182 Warp Pack"));
+        let menu: Vec<usize> =
+            ["Reinforce", "SoS Beacon", "Resupply", "Orbital Laser", "LAS-99 Quasar Cannon", "LIFT-182 Warp Pack", "M-102 Gunner FRV"]
+                .iter()
+                .map(|n| idx(n))
+                .collect();
+        (p.standby, p.state) = (false, GameState::Mission);
+        let mut setup = serde_json::Map::new();
+        for (name, q, w) in [
+            ("ready", (Status::Ready, 0.0), (Status::Ready, 0.0)),
+            ("first", (Status::Active, 0.5), (Status::Ready, 0.0)),
+            ("both", (Status::Active, 0.9), (Status::Active, 0.4)),
+        ] {
+            p.loadout = menu
+                .iter()
+                .map(|&i| {
+                    let (status, fill) = if i == quasar {
+                        q
+                    } else if i == warp {
+                        w
+                    } else {
+                        (Status::Ready, 0.0)
+                    };
+                    Some(sv(i, status, fill, None))
+                })
+                .collect();
+            setup.insert(name.into(), json!(image_of(&p.paint("setup")[0])));
+        }
+        p.loadout = vec![];
+
         let mut scan = serde_json::Map::new();
         for (name, standby, state) in [
             ("start", true, GameState::Missing),
@@ -1811,7 +1881,8 @@ mod tests {
         let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/demo");
         std::fs::create_dir_all(&out).expect("target/demo");
         let file = out.join("scenes.json");
-        std::fs::write(&file, serde_json::to_vec(&json!({ "columns": 5, "scenes": scenes, "scan": scan })).unwrap()).expect("write scenes");
+        std::fs::write(&file, serde_json::to_vec(&json!({ "columns": 5, "scenes": scenes, "scan": scan, "setup": setup })).unwrap())
+            .expect("write scenes");
         println!("scenes written to {}", file.display());
     }
 }

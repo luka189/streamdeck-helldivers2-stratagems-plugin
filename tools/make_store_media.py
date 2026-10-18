@@ -178,6 +178,26 @@ def main() -> int:
         d.text((x + 150, y + 70), text, font=font(30), fill=MUTED)
     img.save(OUT / "gallery_3_standby.png")
 
+    # gallery: a Stratagem Setup key through a press
+    img = backdrop(1920, 960, (960, 560))
+    heading(img, "Stratagem Setup: a whole drop in one press",
+            "Two to four of your loadout stratagems on one key, called in and thrown one after the other.")
+    d = ImageDraw.Draw(img)
+    steps = [("ready", "Press", "the Quasar Cannon and the Warp Pack, both ready"),
+             ("first", "Called in, thrown", "the Quasar Cannon is on its way"),
+             ("both", "Then the next", "the Warp Pack follows, a throw later")]
+    size, step = 240, 560
+    for i, (key, label, text) in enumerate(steps):
+        x = 960 - step + i * step - size // 2
+        paste_rounded(img, key_image(scenes["setup"][key], size, cache), (x, 330), 30)
+        d.text((x + size // 2, 610), label, font=font(42, "Bold"), fill=CREAM, anchor="mm")
+        d.text((x + size // 2, 662), text, font=font(28), fill=MUTED, anchor="mm")
+        if i < len(steps) - 1:
+            arrow(img, x + size + 100, 450)
+    d.text((960, 790), "Found in the menu wherever a mission puts them. A stratagem that isn't ready is skipped.",
+           font=font(32), fill=MUTED, anchor="mm")
+    img.save(OUT / "gallery_4_setup.png")
+
     # video: the scripted mission of the README, at 1920x1080
     if shutil.which("ffmpeg"):
         with tempfile.TemporaryDirectory() as tmp:
