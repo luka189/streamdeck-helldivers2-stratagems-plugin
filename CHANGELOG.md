@@ -8,6 +8,10 @@ What changed in each version of the plugin, newest first. The versions follow [s
 
 - **Sharp numbers on the badges.** The reinforcements left and the uses of a stratagem are read as numbers and drawn with clean digits in the game's style, instead of the captured pixels blown up, which looked blocky. A number that doesn't read clearly is still shown as captured.
 
+### Fixed
+
+- **Keys follow the menu when a mission adds or removes a stratagem.** When a mission handed out a stratagem, such as SEAF Artillery, which the game puts after Resupply, the keys after it were only moved along one by one, and showed old and new places mixed for a while, a wrong stratagem among them. The open menu now lays all the keys out at once, each keeping its cooldown; the same goes for a used SOS Beacon leaving the menu.
+
 ## [0.5.2] - 2026-10-13
 
 ### Changed

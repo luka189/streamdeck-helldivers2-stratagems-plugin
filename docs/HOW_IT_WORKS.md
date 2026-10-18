@@ -52,7 +52,7 @@ The icons are the game's own. `data/icons/` holds the texture the game keeps for
 
 ## Following the game over time
 
-`engine.rs` turns single readings into what the keys show. A stratagem must be seen in the same slot for a few scans in a row before its key shows it (*Confirm after*), and another stratagem must be read there four times in a row to take the slot over. Status changes are confirmed the same way.
+`engine.rs` turns single readings into what the keys show. A stratagem must be seen in the same slot for a few scans in a row before its key shows it (*Confirm after*), and another stratagem must be read there four times in a row to take the slot over. Status changes are confirmed the same way. The open menu is an exception, since it shows every slot: read the same twice in a row, it lays all the slots out at once. That matters when the game moves the menu along, as it does when a mission hands out a stratagem (SEAF Artillery comes in after Resupply) or takes one back (a used SOS Beacon): every stratagem goes to its new slot with its cooldown and badge, instead of the slots following one by one and mixing old and new places meanwhile.
 
 With the menu closed, the HUD shows much less: Reinforce, the rows of call-ins in flight, and a notice when a cooldown ends. The engine fills the gaps:
 
