@@ -80,6 +80,12 @@ jobs:
           Select-String -Path $path -Pattern '"Version"'
       - name: Build and package the plugin
         run: ./build.ps1 -Package
+      # the watcher alone, for the Stratagem Deck plugin (see scanner/src/bin/hd2-watch.rs)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hd2-watch
+          path: scanner/target/release/hd2-watch.exe
+          if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:
           name: streamdeck-plugin
