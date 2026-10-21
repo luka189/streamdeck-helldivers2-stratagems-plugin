@@ -1798,8 +1798,10 @@ mod tests {
 
     #[test]
     fn a_slot_key_repaints_when_its_timer_changes_and_can_hide_it() {
-        let soon = Some(engine::ReadyAt { at: Instant::now() + Duration::from_secs(90), timed: true });
-        let mut p = plugin(vec![Some(SlotView { index: 0, status: Status::Cooldown, fill: 0.5, badge: None, ready: soon })]);
+        // the plugin first: loading its icon takes seconds in a debug build, which would eat into the cooldown
+        let mut p = plugin(vec![]);
+        let soon = Some(engine::ReadyAt { at: Instant::now() + Duration::from_millis(90_500), timed: true });
+        p.loadout = vec![Some(SlotView { index: 0, status: Status::Cooldown, fill: 0.5, badge: None, ready: soon })];
         p.register(SLOT, "timed", &json!({ "slot": 1 }));
         p.register(SLOT, "quiet", &json!({ "slot": 1, "show_timer": false }));
         assert!(p.timers_due(Instant::now()).is_empty(), "just painted");
