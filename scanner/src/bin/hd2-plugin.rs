@@ -834,6 +834,7 @@ fn scan_thread(engine: Arc<Mutex<Engine>>, cfg: Arc<Mutex<Config>>, tx: mpsc::Un
                     // the loadout belonged to the game that just closed
                     let mut e = engine.lock().unwrap_or_else(|p| p.into_inner());
                     e.clear();
+                    e.hud_scale = None; // the next game may run with another HUD scale
                     last = e.loadout();
                     drop(e);
                     if tx.send(Event::Loadout(last.clone())).is_err() {
