@@ -47,6 +47,8 @@ jobs:
   # The packaged plugin is kept as an artifact of the run: the release workflow attaches it to the GitHub release.
   build:
     runs-on: windows-2025
+    permissions:
+      contents: write # the personal branch keeps its watcher on the hd2-watch-bin branch
     defaults:
       run:
         shell: pwsh
@@ -80,6 +82,25 @@ jobs:
           Select-String -Path $path -Pattern '"Version"'
       - name: Build and package the plugin
         run: ./build.ps1 -Package
+      # On the personal branch the watcher is also kept on the hd2-watch-bin branch, as one commit with the exe, so
+      # that the Stratagem Deck plugin's build can fetch it with git
+      - name: Keep the watcher on the hd2-watch-bin branch
+        if: github.ref == 'refs/heads/personal' && github.event_name == 'push'
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'watch-bin'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item scanner/target/release/hd2-watch.exe $dir
+          Set-Content -Path (Join-Path $dir 'BUILD.txt') -Value "hd2-watch.exe built from $env:GITHUB_SHA (run $env:GITHUB_RUN_NUMBER)"
+          Push-Location $dir
+          git init -q -b hd2-watch-bin
+          git config user.name 'github-actions'
+          git config user.email 'github-actions@users.noreply.github.com'
+          git add -A
+          git commit -q -m "chore: hd2-watch.exe from $env:GITHUB_SHA"
+          git push -f "https://x-access-token:$env:GH_TOKEN@github.com/$env:GITHUB_REPOSITORY.git" hd2-watch-bin
+          Pop-Location
+        env:
+          GH_TOKEN: ${{ github.token }}
       # the watcher alone, for the Stratagem Deck plugin (see scanner/src/bin/hd2-watch.rs)
       - uses: actions/upload-artifact@v7
         with:
