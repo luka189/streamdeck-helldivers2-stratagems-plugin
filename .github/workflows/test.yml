@@ -2,8 +2,10 @@ name: Tests
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main, dev, personal]
   pull_request:
+  # by hand, from the Actions tab, on any branch
+  workflow_dispatch:
   # the release workflow runs the same jobs before it publishes
   workflow_call:
 
