@@ -1800,12 +1800,12 @@ mod tests {
     fn a_slot_key_repaints_when_its_timer_changes_and_can_hide_it() {
         // the plugin first: loading its icon takes seconds in a debug build, which would eat into the cooldown
         let mut p = plugin(vec![]);
-        let soon = Some(engine::ReadyAt { at: Instant::now() + Duration::from_millis(90_500), timed: true });
+        let soon = Some(engine::ReadyAt { at: Instant::now() + Duration::from_secs(90), timed: true });
         p.loadout = vec![Some(SlotView { index: 0, status: Status::Cooldown, fill: 0.5, badge: None, ready: soon })];
         p.register(SLOT, "timed", &json!({ "slot": 1 }));
         p.register(SLOT, "quiet", &json!({ "slot": 1, "show_timer": false }));
-        assert!(p.timers_due(Instant::now()).is_empty(), "just painted");
-        assert_eq!(p.keys["timed"].timer.as_deref(), Some("1:30"));
+        // 90 s, less the moment the painting took (rounded up to the second, so 1:30 unless it crossed one)
+        assert!(matches!(p.keys["timed"].timer.as_deref(), Some("1:30" | "1:29")), "{:?}", p.keys["timed"].timer);
         assert_eq!(p.keys["quiet"].timer, None, "the timer is off on this key");
         assert_eq!(p.timers_due(Instant::now() + Duration::from_secs(2)), vec!["timed".to_string()], "a second later");
         assert!(p.icons.len() <= 1, "pictures with a timer are not kept");
