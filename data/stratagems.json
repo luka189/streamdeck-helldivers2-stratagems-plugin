@@ -803,5 +803,19 @@
     "cooldown": "N/A",
     "type": "mission",
     "icon": "Orbital_Illumination_Flare_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "AMW-20 Apex",
+    "code": "DLLUDL",
+    "cooldown": "480s",
+    "type": "supply",
+    "icon": "Apex_Stratagem_Icon_Background.svg"
+  },
+  {
+    "name": "LAS-44 Nova",
+    "code": "DLRDD",
+    "cooldown": "480s",
+    "type": "supply",
+    "icon": "Nova_Stratagem_Icon_Background.svg"
   }
 ]
