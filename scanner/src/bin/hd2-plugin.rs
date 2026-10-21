@@ -39,7 +39,9 @@ struct Key {
     action: String,
     slot: usize,
     show_name: bool,
-    loadout: Vec<usize>, // a Stratagem Setup key's loadout stratagems (0: the first one chosen), in calling order
+    show_timer: bool,      // a slot key writes a cooldown's time left over its icon
+    timer: Option<String>, // the time left it showed when last painted
+    loadout: Vec<usize>,   // a Stratagem Setup key's loadout stratagems (0: the first one chosen), in calling order
 }
 
 // A Stratagem Setup key calls SETUP_MIN to LOADOUT_SIZE of the player's loadout stratagems, picked by their place in the
@@ -263,14 +265,15 @@ const CREAM: [f32; 3] = [240.0, 232.0, 214.0]; // glyph and edge line inside the
 /// The stratagem icon (`png`, as stored) with the game's progress overlay across the whole icon,
 /// frame included: a beige fill with a cream glyph, rising from the bottom while cooling down, coming
 /// down from the top while inbound, covering it all when unavailable. With nothing to draw, the icon
-/// itself, as it is. None when it needs drawing and cannot be decoded.
-fn icon_png<'a>(png: &'a [u8], view: &SlotView) -> Option<Cow<'a, [u8]>> {
+/// itself, as it is. With a `timer`, the time left is written over it all. None when it needs drawing and cannot be
+/// decoded.
+fn icon_png<'a>(png: &'a [u8], view: &SlotView, timer: Option<&str>) -> Option<Cow<'a, [u8]>> {
     let covered = match view.status {
         Status::Unavailable => true,
         Status::Cooldown | Status::Active => view.fill > 0.0,
         Status::Ready | Status::Unknown => false,
     };
-    if !covered && view.badge.is_none() {
+    if !covered && view.badge.is_none() && timer.is_none() {
         return Some(Cow::Borrowed(png));
     }
     let decoder = png::Decoder::new(std::io::Cursor::new(png));
@@ -307,6 +310,9 @@ fn icon_png<'a>(png: &'a [u8], view: &SlotView) -> Option<Cow<'a, [u8]>> {
     }
     if let Some(b) = &view.badge {
         draw_badge(px, w, h, b);
+    }
+    if let Some(t) = timer {
+        draw_timer(px, w, h, t);
     }
     let mut out = Vec::new();
     {
@@ -446,6 +452,91 @@ fn draw_badge(px: &mut [u8], w: usize, h: usize, b: &hd_scanner::engine::Badge) 
                 p[c] = (BADGE_BG[c] * (1.0 - t) + BADGE_INK[c] * t) as u8;
             }
             p[3] = 255;
+        }
+    }
+}
+
+const TIMER_INK: [f32; 3] = [255.0, 255.0, 255.0];
+const TIMER_EDGE: [f32; 3] = [0.0, 0.0, 0.0];
+const TIMER_HEIGHT: f32 = 0.3; // the digits' height, as a share of the key's
+const TIMER_EDGE_WIDTH: f32 = 0.025; // the dark edge around them, as a share of the key's height
+
+/// A time left as a key writes it: seconds under a minute ("45"), minutes and seconds from one ("1:12"). None once
+/// nothing is left.
+fn timer_text(left: Duration) -> Option<String> {
+    let s = left.as_secs_f32().ceil() as u64;
+    match s {
+        0 => None,
+        1..60 => Some(s.to_string()),
+        _ => Some(format!("{}:{:02}", s / 60, s % 60)),
+    }
+}
+
+/// The time left a slot key showing `v` writes at `now`: a cooldown's, when its end is known or estimated.
+fn timer_of(v: &SlotView, now: Instant) -> Option<String> {
+    if v.status != Status::Cooldown {
+        return None;
+    }
+    timer_text(v.ready.as_ref()?.at.saturating_duration_since(now))
+}
+
+/// Write `text` (digits and colons) across the middle of the key, in white with a dark edge, with the digits of the
+/// count badges (glyphs.rs).
+fn draw_timer(px: &mut [u8], w: usize, h: usize, text: &str) {
+    let dh = ((h as f32 * TIMER_HEIGHT).round() as usize).clamp(1, h);
+    let dw = ((dh as f32 * hd_scanner::glyphs::BOX.0 / hd_scanner::glyphs::BOX.1).round() as usize).max(1);
+    let (gap, colon) = ((dh as f32 * 0.12).round() as usize, (dh as f32 * 0.3).round() as usize);
+    let widths: Vec<usize> = text.chars().map(|c| if c == ':' { colon } else { dw }).collect();
+    let total = widths.iter().sum::<usize>() + gap * widths.len().saturating_sub(1);
+    let mut ink = vec![0.0f32; w * h];
+    let (mut x, y0) = (w.saturating_sub(total) / 2, (h - dh) / 2);
+    let mut put = |x: usize, y: usize, t: f32| {
+        if x < w && y < h {
+            ink[y * w + x] = ink[y * w + x].max(t);
+        }
+    };
+    for (c, &cw) in text.chars().zip(&widths) {
+        if c == ':' {
+            let r = (dh as f32 * 0.075).max(1.0); // two round dots, at a third and two thirds of the height
+            let cx = x as f32 + cw as f32 / 2.0;
+            for cy in [y0 as f32 + dh as f32 * 0.33, y0 as f32 + dh as f32 * 0.72] {
+                for yy in (cy - r - 1.0).max(0.0) as usize..=(cy + r + 1.0) as usize {
+                    for xx in (cx - r - 1.0).max(0.0) as usize..=(cx + r + 1.0) as usize {
+                        let d = (xx as f32 + 0.5 - cx).hypot(yy as f32 + 0.5 - cy);
+                        put(xx, yy, (r + 0.5 - d).clamp(0.0, 1.0));
+                    }
+                }
+            }
+        } else {
+            let glyph = hd_scanner::glyphs::render(&c.to_string(), cw, dh);
+            for gy in 0..dh {
+                for gx in 0..cw {
+                    put(x + gx, y0 + gy, glyph[gy * cw + gx]);
+                }
+            }
+        }
+        x += cw + gap;
+    }
+    // the edge: the most ink within its width of each pixel
+    let e = ((h as f32 * TIMER_EDGE_WIDTH).round() as isize).max(1);
+    for y in 0..h {
+        for x in 0..w {
+            let mut edge = 0.0f32;
+            for dy in -e..=e {
+                for dx in -e..=e {
+                    let (xx, yy) = (x as isize + dx, y as isize + dy);
+                    if dx * dx + dy * dy <= e * e && xx >= 0 && yy >= 0 && (xx as usize) < w && (yy as usize) < h {
+                        edge = edge.max(ink[yy as usize * w + xx as usize]);
+                    }
+                }
+            }
+            let t = ink[y * w + x];
+            let p = &mut px[(y * w + x) * 4..(y * w + x) * 4 + 4];
+            for c in 0..3 {
+                let under = p[c] as f32 * (1.0 - edge) + TIMER_EDGE[c] * edge;
+                p[c] = (under * (1.0 - t) + TIMER_INK[c] * t).round() as u8;
+            }
+            p[3] = p[3].max((edge * 255.0) as u8);
         }
     }
 }
@@ -594,7 +685,9 @@ impl Plugin {
             let cells: Vec<(Cell, Option<Vec<u8>>)> = id
                 .iter()
                 .zip(&views)
-                .map(|(cell, v)| (cell.clone(), v.as_ref().and_then(|v| icon_png(&self.catalog[v.index].png, v).map(Cow::into_owned))))
+                .map(|(cell, v)| {
+                    (cell.clone(), v.as_ref().and_then(|v| icon_png(&self.catalog[v.index].png, v, None).map(Cow::into_owned)))
+                })
                 .collect();
             let image = data_url("image/png", &setup_png(&cells));
             self.setups.insert(id, image.clone());
@@ -603,16 +696,25 @@ impl Plugin {
         if key.action != SLOT {
             return vec![];
         }
-        let (slot, show_name) = (key.slot, key.show_name);
-        match self.loadout.get(slot).cloned().flatten() {
+        let (slot, show_name, show_timer) = (key.slot, key.show_name, key.show_timer);
+        let view = self.loadout.get(slot).cloned().flatten();
+        let timer = view.as_ref().filter(|_| show_timer).and_then(|v| timer_of(v, Instant::now()));
+        if let Some(k) = self.keys.get_mut(context) {
+            k.timer = timer.clone();
+        }
+        match view {
             Some(v) => {
                 let id = self.icon_key(&v);
                 let png = &self.catalog[v.index].png;
-                let icon = self
-                    .icons
-                    .entry(id)
-                    .or_insert_with(|| icon_png(png, &v).map(|b| data_url("image/png", &b)).unwrap_or_else(blank))
-                    .clone();
+                let icon = match &timer {
+                    // a new picture each second: not kept, or the cache would grow with every second of every cooldown
+                    Some(t) => icon_png(png, &v, Some(t)).map(|b| data_url("image/png", &b)).unwrap_or_else(blank),
+                    None => self
+                        .icons
+                        .entry(id)
+                        .or_insert_with(|| icon_png(png, &v, None).map(|b| data_url("image/png", &b)).unwrap_or_else(blank))
+                        .clone(),
+                };
                 let title = if show_name { self.catalog[v.index].name.as_str() } else { "" };
                 vec![set_image(context, icon), set_title(context, title)]
             }
@@ -639,6 +741,16 @@ impl Plugin {
         }
         // the open menu lists every slot; before it has been read (the closed HUD shows Reinforce only), nothing is known
         if self.loadout.len() < MENU_OPEN_ROWS { Place::Waiting } else { Place::Missing }
+    }
+
+    /// The slot keys whose timer would read differently at `now` than when they were last painted.
+    fn timers_due(&self, now: Instant) -> Vec<String> {
+        self.keys
+            .iter()
+            .filter(|(_, k)| k.action == SLOT && k.show_timer)
+            .filter(|(_, k)| self.loadout.get(k.slot).and_then(Option::as_ref).and_then(|v| timer_of(v, now)) != k.timer)
+            .map(|(c, _)| c.clone())
+            .collect()
     }
 
     fn icon_key(&self, v: &SlotView) -> IconKey {
@@ -672,6 +784,7 @@ impl Plugin {
             None => 0,
         };
         let show_name = settings.get("show_name").and_then(Value::as_bool).unwrap_or(false);
+        let show_timer = settings.get("show_timer").and_then(Value::as_bool).unwrap_or(true);
         let mut loadout = Vec::new();
         if action == SETUP {
             // 1-based in the settings, each once, SETUP_MIN to LOADOUT_SIZE of them; anything else gets the default
@@ -689,7 +802,7 @@ impl Plugin {
                 out.push(MessageOut::SetSettings { context: context.into(), payload: Value::Object(saved) });
             }
         }
-        self.keys.insert(context.into(), Key { action: action.into(), slot, show_name, loadout });
+        self.keys.insert(context.into(), Key { action: action.into(), slot, show_name, show_timer, timer: None, loadout });
         out.extend(self.paint(context));
         out
     }
@@ -1142,11 +1255,16 @@ async fn main() {
                 let (state, standby) = (p.state, p.standby);
                 let acquiring: Vec<usize> = (0..SLOT_MAX).filter(|&s| p.is_acquiring(s)).collect();
                 let waiting: Vec<usize> = (0..LOADOUT_SIZE).filter(|&k| p.loadout_slot(k) == Place::Waiting).collect();
-                p.paint_where(|k| {
+                let mut out = p.paint_where(|k| {
                     (k.action == SCAN && !standby && state != GameState::Missing)
                         || (step_acquiring && k.action == SLOT && acquiring.contains(&k.slot))
                         || (step_acquiring && k.action == SETUP && k.loadout.iter().any(|n| waiting.contains(n)))
-                })
+                });
+                // a timer on a key counts down by the second, between two scans that change nothing else
+                for context in p.timers_due(Instant::now()) {
+                    out.extend(p.paint(&context));
+                }
+                out
             }
         };
         for m in out {
@@ -1339,15 +1457,15 @@ mod tests {
             sv(0, Status::Cooldown, 0.0, None),
             sv(0, Status::Active, 0.0, None),
         ] {
-            let out = icon_png(&file, &v).expect("the icon");
+            let out = icon_png(&file, &v, None).expect("the icon");
             assert!(matches!(out, Cow::Borrowed(b) if std::ptr::eq(b, &file[..])), "{v:?}: not the very same bytes");
         }
         // a broken picture goes through when nothing is drawn on it, and gives none to draw on
-        assert_eq!(icon_png(b"not a png", &sv(0, Status::Ready, 0.0, None)).as_deref(), Some(&b"not a png"[..]));
-        assert_eq!(icon_png(b"not a png", &sv(0, Status::Unavailable, 1.0, None)), None);
+        assert_eq!(icon_png(b"not a png", &sv(0, Status::Ready, 0.0, None), None).as_deref(), Some(&b"not a png"[..]));
+        assert_eq!(icon_png(b"not a png", &sv(0, Status::Unavailable, 1.0, None), None), None);
         // not 8-bit RGBA: passed through untouched rather than drawn on
         let grey = Data::Embedded.read("status/arrow_up.png").expect("built in");
-        assert_eq!(icon_png(&grey, &sv(0, Status::Cooldown, 0.5, None)).as_deref(), Some(&grey[..]));
+        assert_eq!(icon_png(&grey, &sv(0, Status::Cooldown, 0.5, None), None).as_deref(), Some(&grey[..]));
     }
 
     /// Each key shows its stratagem's icon as the matcher draws it from the game's texture, 144x144, as
@@ -1381,7 +1499,7 @@ mod tests {
             (Status::Unavailable, 0.4, 0..h, 0..0),
         ];
         for (status, f, covered, clean) in cases {
-            let (ow, oh, px) = decode(&icon_png(&icon(), &sv(0, status, f, None)).expect("drawn"));
+            let (ow, oh, px) = decode(&icon_png(&icon(), &sv(0, status, f, None), None).expect("drawn"));
             assert_eq!((ow, oh), (w, h), "{status:?}: same size as the icon");
             for y in 0..h {
                 for x in 0..w {
@@ -1403,7 +1521,7 @@ mod tests {
         let (w, h, src) = decode(&icon());
         // a 3x5 block of ink stands in for a digit
         let badge = Badge { hash: 7, w: 3, h: 5, bits: Arc::new(vec![true; 15]), number: None };
-        let (_, _, px) = decode(&icon_png(&icon(), &sv(0, Status::Ready, 0.0, Some(badge))).expect("drawn"));
+        let (_, _, px) = decode(&icon_png(&icon(), &sv(0, Status::Ready, 0.0, Some(badge)), None).expect("drawn"));
         // (3 + 2 * 7) x (5 + 2 * 5) game pixels at 144 / 57 key pixels each
         let (bw, bh) = (43, 38);
         let at = |x: usize, y: usize| &px[(y * w + x) * 4..(y * w + x) * 4 + 4];
@@ -1426,7 +1544,7 @@ mod tests {
         let (w, h, src) = decode(&icon());
         // a "1" of the game's size (8x14 at 1440p): drawn as the glyph, not as the blocks of the capture
         let badge = Badge { hash: 1, w: 8, h: 14, bits: Arc::new(vec![false; 112]), number: Some("1".into()) };
-        let (_, _, px) = decode(&icon_png(&icon(), &sv(0, Status::Ready, 0.0, Some(badge))).expect("drawn"));
+        let (_, _, px) = decode(&icon_png(&icon(), &sv(0, Status::Ready, 0.0, Some(badge)), None).expect("drawn"));
         let at = |x: usize, y: usize| -> [u8; 3] { std::array::from_fn(|c| px[(y * w + x) * 4 + c]) };
         let (bw, bh) = (((8.0 + 14.0) * 144.0 / 57.0_f32).round() as usize, ((14.0 + 10.0) * 144.0 / 57.0_f32).round() as usize);
         let (ox, oy) = (w - bw, h - bh);
@@ -1639,6 +1757,56 @@ mod tests {
         assert_eq!(image_of(&p.paint("past")[0]), blank());
         assert_eq!(p.icons.len(), 2, "one cached icon per (stratagem, status, fill step, badge)");
         assert!(p.paint("unknown context").is_empty());
+    }
+
+    #[test]
+    fn a_timer_reads_seconds_then_minutes_and_seconds() {
+        let t = |s: f32| timer_text(Duration::from_secs_f32(s));
+        assert_eq!(t(0.0), None, "nothing left: no timer");
+        assert_eq!(t(0.2), Some("1".into()), "a part second left counts as one");
+        assert_eq!(t(45.0), Some("45".into()));
+        assert_eq!(t(59.5), Some("1:00".into()));
+        assert_eq!(t(72.0), Some("1:12".into()));
+        assert_eq!(t(600.0), Some("10:00".into()));
+    }
+
+    #[test]
+    fn only_a_cooldown_with_a_known_end_has_a_timer() {
+        let now = Instant::now();
+        let cooling = |ready| SlotView { index: 0, status: Status::Cooldown, fill: 0.5, badge: None, ready };
+        let ends = |s: u64, timed| Some(engine::ReadyAt { at: now + Duration::from_secs(s), timed });
+        assert_eq!(timer_of(&cooling(ends(72, true)), now), Some("1:12".into()), "from the game's timer");
+        assert_eq!(timer_of(&cooling(ends(30, false)), now), Some("30".into()), "from an estimate");
+        assert_eq!(timer_of(&cooling(None), now), None);
+        assert_eq!(timer_of(&SlotView { status: Status::Active, ..cooling(ends(5, true)) }, now), None, "on its way: no timer");
+    }
+
+    #[test]
+    fn a_timer_is_written_in_white_with_a_dark_edge_across_the_middle() {
+        let view = sv(0, Status::Ready, 0.0, None);
+        let (w, h, plain) = decode(&icon_png(&icon(), &view, None).expect("the icon"));
+        let (_, _, px) = decode(&icon_png(&icon(), &view, Some("1:12")).expect("drawn"));
+        let at = |px: &[u8], x: usize, y: usize| [px[(y * w + x) * 4], px[(y * w + x) * 4 + 1], px[(y * w + x) * 4 + 2]];
+        let row = |y: usize| (0..w).map(|x| at(&px, x, y)).collect::<Vec<_>>();
+        let middle = row(h / 2);
+        assert!(middle.iter().any(|p| p.iter().all(|&c| c > 240)), "white digits across the middle");
+        assert!(middle.iter().any(|p| p.iter().all(|&c| c < 40)), "a dark edge around them");
+        for y in (0..h / 4).chain(h * 3 / 4..h) {
+            assert!((0..w).all(|x| at(&px, x, y) == at(&plain, x, y)), "row {y}, away from the digits, is untouched");
+        }
+    }
+
+    #[test]
+    fn a_slot_key_repaints_when_its_timer_changes_and_can_hide_it() {
+        let soon = Some(engine::ReadyAt { at: Instant::now() + Duration::from_secs(90), timed: true });
+        let mut p = plugin(vec![Some(SlotView { index: 0, status: Status::Cooldown, fill: 0.5, badge: None, ready: soon })]);
+        p.register(SLOT, "timed", &json!({ "slot": 1 }));
+        p.register(SLOT, "quiet", &json!({ "slot": 1, "show_timer": false }));
+        assert!(p.timers_due(Instant::now()).is_empty(), "just painted");
+        assert_eq!(p.keys["timed"].timer.as_deref(), Some("1:30"));
+        assert_eq!(p.keys["quiet"].timer, None, "the timer is off on this key");
+        assert_eq!(p.timers_due(Instant::now() + Duration::from_secs(2)), vec!["timed".to_string()], "a second later");
+        assert!(p.icons.len() <= 1, "pictures with a timer are not kept");
     }
 
     #[test]

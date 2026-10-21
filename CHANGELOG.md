@@ -6,6 +6,7 @@ What changed in each version of the plugin, newest first. The versions follow [s
 
 ### Added
 
+- **Timers on the keys.** A cooling stratagem's key writes the time left across its icon, in white with a dark edge: seconds under a minute (`45`), minutes and seconds above (`1:12`). It counts down to the game's own timer when the plugin read it, and to its estimate otherwise. Each Stratagem Slot key has a *Show timer* box, on by default.
 - **AMW-20 Apex and LAS-44 Nova.** The two support weapons of the warbond of 20 October 2026 are recognised and shown on the keys. Their icons are Dogo314's tracings from the Helldivers Wiki, turned into the plugin's two-colour masks; the Nova's cooldown is assumed to be 480 s, like the other support weapons, until the wiki lists it (the plugin corrects it from the game's timer).
 
 ## [0.5.3] - 2026-10-18

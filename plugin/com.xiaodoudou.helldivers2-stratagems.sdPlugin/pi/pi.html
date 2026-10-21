@@ -22,6 +22,7 @@
 <div id="slotBlock" style="display:none">
   <div class="row"><label for="slot">Slot</label><select id="slot"></select></div>
   <div class="row"><label for="show_name">Show name</label><input id="show_name" type="checkbox"></div>
+  <div class="row"><label for="show_timer">Show timer</label><input id="show_timer" type="checkbox"></div>
   <div class="hint">Nth stratagem read from the game, in order of appearance. Scan period, keys and timings are shared by all keys: set them on the Scan Now key.</div>
 </div>
 
@@ -217,10 +218,12 @@ for (const id of [...NUMS, ...BOOLS, 'menu_mode', 'resolution']) $(id).addEventL
 function saveSlot() {
   settings.slot = Number(sel.value);
   settings.show_name = $('show_name').checked;
+  settings.show_timer = $('show_timer').checked;
   ws.send(JSON.stringify({ event: 'setSettings', context: ctx, payload: settings }));
 }
 sel.onchange = saveSlot;
 $('show_name').onchange = saveSlot;
+$('show_timer').onchange = saveSlot;
 $('help').onclick = () => ws.send(JSON.stringify({ event: 'openUrl', payload: { url: HELP } }));
 
 function connectElgatoStreamDeckSocket(port, uuid, registerEvent, info, actionInfo) {
@@ -231,6 +234,7 @@ function connectElgatoStreamDeckSocket(port, uuid, registerEvent, info, actionIn
     $('slotBlock').style.display = 'block';
     sel.value = String(settings.slot || 1);
     $('show_name').checked = !!settings.show_name;
+    $('show_timer').checked = settings.show_timer !== false;
   } else if (a.action === 'com.xiaodoudou.helldivers2-stratagems.setup') {
     $('setupBlock').style.display = 'block';
     showSetup();
@@ -248,6 +252,7 @@ function connectElgatoStreamDeckSocket(port, uuid, registerEvent, info, actionIn
       settings = m.payload.settings || {};
       sel.value = String(settings.slot || 1);
       $('show_name').checked = !!settings.show_name;
+      $('show_timer').checked = settings.show_timer !== false;
       showSetup();
     } else if (m.event === 'didReceiveGlobalSettings') {
       global = m.payload.settings || {};
