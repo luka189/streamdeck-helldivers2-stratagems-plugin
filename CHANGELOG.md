@@ -6,6 +6,7 @@ What changed in each version of the plugin, newest first. The versions follow [s
 
 ### Fixed
 
+- **The stratagem HUD at a HUD scale other than the plugin's.** The plugin read the HUD only at the *Icon scale* setting, and at the game's HUD scale 1 the icons are about 1.1 times the size it expected (measured at 2560x1440), so it never saw a mission start. When the setting reads no stratagem row, the plugin now tries other scales, one every half second, nearest to 1 first, until one reads Reinforce in the first row, and keeps the middle of the scales that read it until the game closes; the log names the scale found.
 - **The loadout screen on ultrawide screens.** The game lays the loadout screen out in the 16:9 middle of a wider window (440 px in from each side at 3440x1440), and the plugin looked for the player's card at the window's left edge, so it never found it. It now reads the card at 3440x1440 as at 2560x1440 and 1920x1080.
 
 ### Added

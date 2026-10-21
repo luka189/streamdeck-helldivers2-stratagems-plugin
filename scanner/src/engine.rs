@@ -321,6 +321,9 @@ pub struct Engine {
     last_hud: Option<Instant>,            // last time any stratagem row was on screen
     card: Option<Vec<(usize, bool)>>,     // the loadout card as last read, to be read the same once more
     card_seen: Option<Instant>,           // last time the loadout card was on screen
+    pub hud_scale: Option<f64>,           // the HUD scale found on screen when the configured one reads nothing
+    probe_next: usize,                    // the next of probe_scales() to try
+    probe_at: Option<Instant>,            // when a scale was last tried
 }
 
 /// What the game is doing, as far as the screen tells.
@@ -335,6 +338,27 @@ const HUD_GRACE: Duration = Duration::from_secs(3); // loading flickers and menu
 // Without the HUD this long, the mission is over: forget the loadout. Long enough to survive a map
 // check or a death camera, which also hide it.
 const LOBBY_RESET: Duration = Duration::from_secs(10);
+
+// The game's HUD scale, when the configured one reads no stratagem row: one other scale is tried every PROBE_EVERY,
+// nearest to 1 first, until one reads Reinforce surely in the first row, which a mission's HUD always shows. The
+// middle of the scales around it that read it too is kept, until the game is closed. A probe costs about 30 ms.
+const PROBE_EVERY: Duration = Duration::from_millis(500);
+const PROBE_STEP: f64 = 0.02;
+const PROBE_AROUND: i32 = 4; // scales PROBE_STEP / 2 apart on each side of a hit, to find the middle of the range
+
+/// The scales a probe tries, in order: 1, then further and further from it either way, within Config's 0.5 to 2.
+fn probe_scales() -> Vec<f64> {
+    let mut out = vec![1.0];
+    for d in 1..=(1.0 / PROBE_STEP) as i32 {
+        let step = |sign: f64| ((1.0 + sign * PROBE_STEP * d as f64) * 100.0).round() / 100.0;
+        for s in [step(1.0), step(-1.0)] {
+            if (0.5..=2.0).contains(&s) {
+                out.push(s);
+            }
+        }
+    }
+    out
+}
 // After the loadout screen, a mission is expected this long: the next stratagem HUD is that mission starting.
 const MISSION_EXPECTED: Duration = Duration::from_secs(300);
 
@@ -359,6 +383,9 @@ impl Engine {
             last_hud: None,
             card: None,
             card_seen: None,
+            hud_scale: None,
+            probe_next: 0,
+            probe_at: None,
         })
     }
 
@@ -479,17 +506,71 @@ impl Engine {
 
     /// Reads wherever the game window is on screen, focused or not; it only has to be visible.
     fn read(&mut self, cfg: &Config) -> Result<Vec<Row>, String> {
-        let mut fg =
-            locate(&cfg.process_name).ok_or_else(|| format!("game not running: {}", crate::capture::diagnose(&cfg.process_name)))?;
+        let Some(mut fg) = locate(&cfg.process_name) else {
+            self.hud_scale = None; // the game may come back with another
+            return Err(format!("game not running: {}", crate::capture::diagnose(&cfg.process_name)));
+        };
         self.source = Some(fg.source);
         self.measured = Some((fg.w, fg.h));
         // a size set by hand wins: when the window is hidden from us, the fallbacks can only guess it
         if let Some((w, h)) = cfg.game_size() {
             (fg.w, fg.h) = (w, h);
         }
-        let (x0, y0, x1, y1) = column_box(fg.w, fg.h, cfg.icon_scale);
+        let rows = self.read_at(&fg, self.hud_scale.unwrap_or(cfg.icon_scale))?;
+        if rows.is_empty()
+            && self.hud_scale.is_none()
+            && let Some(found) = self.probe_scale(&fg, cfg)?
+        {
+            return Ok(found);
+        }
+        Ok(rows)
+    }
+
+    /// The rows of the game's menu at HUD scale `scale`.
+    fn read_at(&mut self, fg: &GameWindow, scale: f64) -> Result<Vec<Row>, String> {
+        let (x0, y0, x1, y1) = column_box(fg.w, fg.h, scale);
         let col = self.grabber.grab(fg.x + x0 as i32, fg.y + y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32)?;
-        Ok(self.matcher.read_rows(&col, fg.h, (x0, y0), cfg.icon_scale))
+        Ok(self.matcher.read_rows(&col, fg.h, (x0, y0), scale))
+    }
+
+    /// Whether `rows` start with Reinforce in the first row, read surely: the HUD of a mission, at the right scale.
+    fn reinforce_first(&self, rows: &[Row]) -> bool {
+        rows.first().is_some_and(|r| r.slot == 0 && r.sure && self.matcher.catalog[r.index].name == "Reinforce")
+    }
+
+    /// Try the next of probe_scales() (see PROBE_EVERY). On a hit, settle on the middle of the scales around it that
+    /// read Reinforce too, keep it as hud_scale, and return the rows read at it.
+    fn probe_scale(&mut self, fg: &GameWindow, cfg: &Config) -> Result<Option<Vec<Row>>, String> {
+        if self.probe_at.is_some_and(|t| t.elapsed() < PROBE_EVERY) {
+            return Ok(None);
+        }
+        self.probe_at = Some(Instant::now());
+        let scales = probe_scales();
+        let s = scales[self.probe_next % scales.len()];
+        self.probe_next = (self.probe_next + 1) % scales.len();
+        if (s - cfg.icon_scale).abs() < PROBE_STEP / 4.0 {
+            return Ok(None); // read already
+        }
+        let rows = self.read_at(fg, s)?;
+        if !self.reinforce_first(&rows) {
+            return Ok(None);
+        }
+        let mut hits = Vec::new();
+        for d in -PROBE_AROUND..=PROBE_AROUND {
+            let t = s + PROBE_STEP / 2.0 * d as f64;
+            if (0.5..=2.0).contains(&t) {
+                let around = self.read_at(fg, t)?;
+                if self.reinforce_first(&around) {
+                    hits.push(t);
+                }
+            }
+        }
+        let middle = match (hits.first(), hits.last()) {
+            (Some(lo), Some(hi)) => ((lo + hi) / 2.0 * 100.0).round() / 100.0,
+            _ => s,
+        };
+        self.hud_scale = Some(middle);
+        Ok(Some(self.read_at(fg, middle)?))
     }
 
     /// Fill a slot. A different stratagem replaces the current one with a better reading, or when it
@@ -835,6 +916,18 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn hud_scales_are_probed_nearest_to_one_first_over_the_whole_setting_range() {
+        let s = probe_scales();
+        assert_eq!(s[..5], [1.0, 1.02, 0.98, 1.04, 0.96]);
+        assert!(s.contains(&0.5) && s.contains(&2.0) && s.contains(&1.1) && s.contains(&0.88), "{s:?}");
+        assert!(s.iter().all(|x| (0.5..=2.0).contains(x)));
+        let mut sorted = s.clone();
+        sorted.sort_by(f64::total_cmp);
+        sorted.dedup();
+        assert_eq!(sorted.len(), s.len(), "each once");
+    }
     use crate::img::Img;
 
     fn data() -> PathBuf {

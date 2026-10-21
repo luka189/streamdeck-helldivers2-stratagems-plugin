@@ -68,6 +68,16 @@ jobs:
       - name: Unit tests
         working-directory: scanner
         run: cargo test
+      # On the personal branch every build gets its own version, the run's number as the fourth part (0.5.3.12), so
+      # that Stream Deck installs each one over the last
+      - name: Number the build
+        if: github.ref == 'refs/heads/personal'
+        run: |
+          $path = 'plugin/com.xiaodoudou.helldivers2-stratagems.sdPlugin/manifest.json'
+          $text = Get-Content -Raw $path
+          $text = $text -replace '"Version": "(\d+)\.(\d+)\.(\d+)\.\d+"', ('"Version": "$1.$2.$3.' + $env:GITHUB_RUN_NUMBER + '"')
+          Set-Content -NoNewline -Path $path -Value $text
+          Select-String -Path $path -Pattern '"Version"'
       - name: Build and package the plugin
         run: ./build.ps1 -Package
       - uses: actions/upload-artifact@v7

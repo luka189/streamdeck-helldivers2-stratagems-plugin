@@ -814,6 +814,7 @@ fn scan_thread(engine: Arc<Mutex<Engine>>, cfg: Arc<Mutex<Config>>, tx: mpsc::Un
     let mut last: Loadout = Vec::new();
     let (mut last_err, mut was_state): (Option<String>, Option<GameState>) = (None, None);
     let mut last_source = None;
+    let mut last_hud_scale: Option<f64> = None;
     let (mut mission_since, mut menu_tries, mut menu_tried): (Option<Instant>, u32, Option<Instant>) = (None, 0, None);
     let mut expected = false; // the mission under way was expected from the loadout screen
     let mut menu_skip: Option<String> = None; // why the last mission-start menu read was refused, logged once
@@ -870,6 +871,13 @@ fn scan_thread(engine: Arc<Mutex<Engine>>, cfg: Arc<Mutex<Config>>, tx: mpsc::Un
             if e.source != last_source {
                 log(format!("game position from {:?}", e.source));
                 last_source = e.source;
+            }
+            if e.hud_scale != last_hud_scale {
+                match e.hud_scale {
+                    Some(s) => log(format!("HUD scale found on screen: {s:.2} (Icon scale is {:.2})", c.icon_scale)),
+                    None => log("HUD scale: from the Icon scale setting again"),
+                }
+                last_hud_scale = e.hud_scale;
             }
             (e.loadout(), e.scan_ms, e.last_error.clone(), e.game_state(), e.mission_slots(), e.mission_expected())
         };
