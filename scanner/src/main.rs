@@ -133,7 +133,7 @@ fn card(data: &Path, inputs: &[String]) {
             let Ok(frame) = Img::load_png(&f) else { continue };
             let (x0, y0, x1, y1) = card_box(frame.w, frame.h);
             let t = Instant::now();
-            let read = m.read_card(&frame.crop(x0 as isize, y0 as isize, x1 - x0, y1 - y0), frame.h, (x0, y0));
+            let read = m.read_card(&frame.crop(x0 as isize, y0 as isize, x1 - x0, y1 - y0), (frame.w, frame.h), (x0, y0));
             let what = read.map_or("no card".to_string(), |c| {
                 c.iter().map(|&(i, sure)| format!("{}{}", m.catalog[i].name, if sure { "" } else { "?" })).collect::<Vec<_>>().join(", ")
             });

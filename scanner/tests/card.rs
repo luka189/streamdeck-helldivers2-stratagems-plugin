@@ -40,7 +40,7 @@ fn matcher() -> Matcher {
 fn read(m: &Matcher, name: &str) -> Option<Vec<(String, bool)>> {
     let (x0, y0, _, _) = card_box(FRAME_W, FRAME_H);
     let img = Img::load_png(&fixture_path(name)).expect(name);
-    m.read_card(&img, FRAME_H, (x0, y0)).map(|c| c.into_iter().map(|(i, sure)| (m.catalog[i].name.clone(), sure)).collect())
+    m.read_card(&img, (FRAME_W, FRAME_H), (x0, y0)).map(|c| c.into_iter().map(|(i, sure)| (m.catalog[i].name.clone(), sure)).collect())
 }
 
 #[test]
@@ -73,6 +73,9 @@ fn the_card_box_scales_with_the_window_and_stays_inside_it() {
     assert!(x1 <= 1920 && y1 <= 1080 && (x1, y1) == (395, 919), "{x1},{y1}");
     let (_, _, x1, y1) = card_box(400, 1440);
     assert_eq!((x1, y1), (400, 1225), "clamped to a narrow window");
+    // an ultrawide window: the card sits in its 16:9 middle, 440 px further right at 3440x1440
+    assert_eq!(card_box(3440, 1440), (510, 1029, 966, 1225));
+    assert_eq!(card_box(2560, 1080).0, card_box(1920, 1080).0 + 320);
 }
 
 fn save_png(img: &Img, path: &Path) {

@@ -4,6 +4,10 @@ What changed in each version of the plugin, newest first. The versions follow [s
 
 ## [Unreleased]
 
+### Fixed
+
+- **The loadout screen on ultrawide screens.** The game lays the loadout screen out in the 16:9 middle of a wider window (440 px in from each side at 3440x1440), and the plugin looked for the player's card at the window's left edge, so it never found it. It now reads the card at 3440x1440 as at 2560x1440 and 1920x1080.
+
 ### Added
 
 - **Arrow keys for the codes.** *Arrow keys* and *WASD* buttons under the code inputs set all four at once, and an input that waits for a key takes it from anywhere in the panel, on key down or key up: Stream Deck's panel can keep the arrow keys' presses from reaching the input box.

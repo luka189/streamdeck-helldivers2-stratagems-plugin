@@ -419,7 +419,7 @@ impl Engine {
         }
         let (x0, y0, x1, y1) = card_box(fg.w, fg.h);
         let img: Img = self.grabber.grab(fg.x + x0 as i32, fg.y + y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32)?;
-        Ok(self.take_card(self.matcher.read_card(&img, fg.h, (x0, y0))))
+        Ok(self.take_card(self.matcher.read_card(&img, (fg.w, fg.h), (x0, y0))))
     }
 
     /// A reading of the loadout card, None when it is not on screen. The card on screen means a mission is coming

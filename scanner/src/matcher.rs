@@ -273,11 +273,19 @@ const CARD_PAD: f64 = 4.0; // the icons are searched this far around their place
 const CARD_MIN: f32 = 0.65;
 
 /// Where the loadout card's two rows sit inside a w x h game frame: (x0, y0, x1, y1).
+/// Where the 16:9 middle of a wider window starts, in pixels: the game lays the loadout screen out in it, scaled with
+/// the height, and leaves the sides of an ultrawide screen (3440x1440, 2560x1080...) to the background. 0 for a 16:9
+/// window or a narrower one.
+pub fn wide_offset(w: usize, h: usize) -> f64 {
+    ((w as f64 - h as f64 * 16.0 / 9.0) / 2.0).max(0.0)
+}
+
 pub fn card_box(w: usize, h: usize) -> (usize, usize, usize, usize) {
     let f = h as f64 / REF_HEIGHT;
+    let ox = wide_offset(w, h);
     let row_end = |(x, _, side, step): (f64, f64, f64, f64), n: usize| x + step * (n - 1) as f64 + side;
-    let x0 = (CARD_MISSION.0.min(CARD_LOADOUT.0) - 2.0 * CARD_PAD) * f;
-    let x1 = (row_end(CARD_MISSION, CARD_COMMON).max(row_end(CARD_LOADOUT, CARD_LOADOUT_SLOTS)) + 2.0 * CARD_PAD) * f;
+    let x0 = ox + (CARD_MISSION.0.min(CARD_LOADOUT.0) - 2.0 * CARD_PAD) * f;
+    let x1 = ox + (row_end(CARD_MISSION, CARD_COMMON).max(row_end(CARD_LOADOUT, CARD_LOADOUT_SLOTS)) + 2.0 * CARD_PAD) * f;
     let y0 = (CARD_MISSION.1 - 2.0 * CARD_PAD) * f;
     let y1 = (CARD_LOADOUT.1 + CARD_LOADOUT.2 + 2.0 * CARD_PAD) * f;
     (x0.round().max(0.0) as usize, y0.round() as usize, (x1.round() as usize).min(w), (y1.round() as usize).min(h))
@@ -463,13 +471,14 @@ impl Matcher {
     /// in its order: the three every mission gives, then the player's four (empty boxes left out; the mission's own
     /// are not read, see CARD_COMMON), with whether each reading is sure. None when the card is not on screen, which
     /// its first icon tells: the mission row always starts with Reinforce. `img` is the capture of `card_box`,
-    /// `origin` its top-left in the game frame.
-    pub fn read_card(&self, img: &Img, h: usize, origin: (usize, usize)) -> Option<Vec<(usize, bool)>> {
+    /// `origin` its top-left in the game frame, `(w, h)` the game frame's size.
+    pub fn read_card(&self, img: &Img, (w, h): (usize, usize), origin: (usize, usize)) -> Option<Vec<(usize, bool)>> {
         let f = h as f64 / REF_HEIGHT;
+        let ox = wide_offset(w, h);
         let at = |(x, y, side, step): (f64, f64, f64, f64), k: usize| {
             let size = (side * f).round() as usize;
             let pad = (CARD_PAD * f).round().max(2.0) as usize;
-            let x = ((x + step * k as f64) * f).round() as isize - (origin.0 + pad) as isize;
+            let x = (ox + (x + step * k as f64) * f).round() as isize - (origin.0 + pad) as isize;
             let y = (y * f).round() as isize - (origin.1 + pad) as isize;
             self.identify(&img.crop(x, y, size + 2 * pad, size + 2 * pad), size)
         };
