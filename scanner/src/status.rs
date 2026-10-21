@@ -10,6 +10,9 @@ const BAND_Y: f64 = 34.0; // status line top, below the row's icon top
 const WORD_X: f64 = 154.0;
 const ARROW_X: f64 = 155.0;
 const SLACK: isize = 3; // position tolerance in pixels at 1440p
+// Up and down the tolerance is wider: the status line does not scale quite like the rest of the row. At the game's
+// HUD scale 1 (1.1 here) its words sit 4 to 5 px lower at 1440p than BAND_Y scaled, at HUD scale 0.8 where it says.
+pub const SLACK_Y: isize = 7;
 const STATUS_MIN: f32 = 0.55;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -32,6 +35,9 @@ pub const CODE_READ: usize = 8;
 const TIMER_AFTER_COOLDOWN: f64 = 133.0; // "Cooldown T-"
 const TIMER_AFTER_INBOUND: f64 = 117.0; // "Inbound T-"
 const DIGIT_CELLS: [f64; 4] = [0.0, 13.0, 31.0, 44.0];
+// how far a digit may sit from its cell, across and up and down (capture pixels): at HUD scales other than 1 the
+// cells drift by a pixel or two from their scaled places
+const DIGIT_SLACK: (isize, isize) = (2, 3);
 const DIGIT_MIN: f32 = 0.7; // a digit's correlation, and its lead over the next best digit
 const DIGIT_MARGIN: f32 = 0.03;
 
@@ -165,21 +171,27 @@ impl StatusReader {
 /// tens of seconds be 0-5.
 fn read_timer(col: &Img, f: f64, tpls: &[Template], first: (isize, isize)) -> Option<u32> {
     let mut d = [0u32; 4];
+    // each cell is looked for from where the one before it was found: the spacing drifts at other HUD scales
+    let (mut at, mut prev) = (first, 0.0);
     for (cell, digit) in DIGIT_CELLS.iter().zip(d.iter_mut()) {
-        let x = first.0 + (cell * f).round() as isize;
-        let mut scores: Vec<(f32, u32)> = tpls.iter().filter_map(|t| t.digit.map(|n| (near(col, t, (x, first.1), 1).0, n))).collect();
+        let pos = (at.0 + ((cell - prev) * f).round() as isize, at.1);
+        let mut scores: Vec<(f32, u32, (isize, isize))> =
+            tpls.iter().filter_map(|t| t.digit.map(|n| (near(col, t, pos, DIGIT_SLACK), n))).map(|((c, x, y), n)| (c, n, (x, y))).collect();
         scores.sort_by(|a, b| b.0.total_cmp(&a.0));
         let (best, second) = (scores.first()?, scores.get(1).map_or(-1.0, |s| s.0));
         if best.0 < DIGIT_MIN || best.0 - second < DIGIT_MARGIN {
             return None;
         }
         *digit = best.1;
+        (at, prev) = (best.2, *cell);
     }
     (d[2] <= 5).then_some((d[0] * 10 + d[1]) * 60 + d[2] * 10 + d[3])
 }
 
-fn slack(f: f64) -> isize {
-    ((SLACK as f64) * f).round().max(1.0) as isize
+/// The position tolerance across and up and down, in capture pixels.
+fn slack(f: f64) -> (isize, isize) {
+    let px = |s: isize| ((s as f64) * f).round().max(1.0) as isize;
+    (px(SLACK), px(SLACK_Y))
 }
 
 /// Capture pixel where a template cut at `x` (1440p) on the status line of the row at `top` starts.
@@ -192,11 +204,11 @@ fn best_at(col: &Img, f: f64, t: &Template, x: f64, top: f64, origin: (usize, us
     near(col, t, at(f, x, top, origin), slack(f)).0
 }
 
-/// Best normalised correlation of template `t` with its top-left within `slack` pixels of `pos`
-/// (capture pixels), and where that was.
-fn near(col: &Img, t: &Template, pos: (isize, isize), slack: isize) -> (f32, isize, isize) {
-    let (x, y) = (pos.0 - slack, pos.1 - slack);
-    let win = col.crop(x, y, t.w + 2 * slack as usize, t.h + 2 * slack as usize);
+/// Best normalised correlation of template `t` with its top-left within `slack` pixels of `pos` (across, up and
+/// down; capture pixels), and where that was.
+fn near(col: &Img, t: &Template, pos: (isize, isize), (sx, sy): (isize, isize)) -> (f32, isize, isize) {
+    let (x, y) = (pos.0 - sx, pos.1 - sy);
+    let win = col.crop(x, y, t.w + 2 * sx as usize, t.h + 2 * sy as usize);
     if win.w < t.w || win.h < t.h {
         return (-1.0, pos.0, pos.1);
     }
@@ -340,7 +352,7 @@ mod tests {
 
     #[test]
     fn a_word_off_by_the_slack_still_reads() {
-        for dy in [-SLACK, SLACK] {
+        for dy in [-SLACK_Y, -SLACK, SLACK, SLACK_Y] {
             let mut r = reader();
             let mut img = line(1.0);
             draw(&mut img, "word_cooldown", WORD_X + SLACK as f64, dy, 1.0);

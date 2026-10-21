@@ -21,6 +21,8 @@ const ROW_PITCH: f64 = 70.0;
 const MAX_ROWS: usize = 13;
 const ROW_MIN: f32 = 0.55; // whole-icon score: real rows, dimmed included, >= 0.69; empty spots <= 0.40
 const ROW_MIN_ISOLATED: f32 = 0.80; // rows after an empty slot are never dimmed (seen >= 0.93)
+const ROW_MIN_NOTICE: f32 = 0.60; // ... unless the row reads surely and shows a status line (see read_rows)
+const NOTICE_LINE_MIN: f32 = 0.75; // the status line's score for that (a word reads 0.9 and more)
 const ROW_KEEP: f32 = 0.60; // a slot still showing last scan's stratagem skips the ranking
 const ROW_LOW: usize = 24; // side of the cheap ranking pass
 const ROW_LOW_MIN: f32 = 0.45; // cheap-pass score below which a slot is empty (real >= 0.56, empty <= 0.47)
@@ -386,11 +388,18 @@ impl Matcher {
                 break;
             }
             match self.classify(&win, k) {
-                // dimmed rows only occur in the open menu, which is unbroken from slot 0; a row after a
-                // gap is a bright notice and must clear a bar scenery cannot (scenery reached 0.60)
-                Some((index, score, sure, dx, dy)) if !gap || score >= ROW_MIN_ISOLATED => {
+                // dimmed rows only occur in the open menu, which is unbroken from slot 0; a row after a gap is a
+                // bright notice and must clear a bar scenery cannot (scenery reached 0.60), or be surely one
+                // stratagem and show a status word or code, which scenery does not: at HUD scales other than 1
+                // the closed HUD's notices score from 0.63 (an icon half under the progress fill)
+                Some((index, score, sure, dx, dy)) if !gap || score >= ROW_MIN_NOTICE => {
                     let top = ROW0_Y + ROW_PITCH * k as f64;
                     let line = self.status.read(col, f, size, top, origin);
+                    let notice = score >= ROW_MIN_ISOLATED || (sure && line.status != Status::Unknown && line.score >= NOTICE_LINE_MIN);
+                    if gap && !notice {
+                        self.last.remove(&k);
+                        continue;
+                    }
                     let (index, sure) = self.resolve_lookalike(col, f, size, top, origin, k, index, sure);
                     let sized = self.sized.as_ref().expect("prepared");
                     let (fill_bottom, fill_top) = fill_profile(&win, dx, dy, &sized.images[index], size);
@@ -820,9 +829,10 @@ mod tests {
         let top = ROW0_Y + ROW_PITCH * k as f64;
         let mut out = vec![("icon".to_string(), r(REF_X * f) - pad, r(top * f) - pad, r(REF_X * f) + size + pad, r(top * f) + size + pad)];
         let slack = r(SLACK * f).max(1);
+        let slack_y = r(status::SLACK_Y as f64 * f).max(1);
         let line = |what: String, x: f64, w: f64| {
-            let (x0, y0) = (r(x * f) - slack, r((top + BAND_Y) * f) - slack);
-            (what, x0, y0, x0 + r(w * f).max(4) + 2 * slack, y0 + r(25.0 * f).max(4) + 2 * slack)
+            let (x0, y0) = (r(x * f) - slack, r((top + BAND_Y) * f) - slack_y);
+            (what, x0, y0, x0 + r(w * f).max(4) + 2 * slack, y0 + r(25.0 * f).max(4) + 2 * slack_y)
         };
         out.push(line("words".into(), WORD_X, 58.0));
         for i in 0..status::CODE_READ {
