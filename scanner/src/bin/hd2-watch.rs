@@ -49,7 +49,9 @@ const PROBE_AROUND: i32 = 4;
 // Reinforce alone pins the scale to about 0.03, but the lower rows of the open menu drift off their places within
 // 0.01 of the right one. So the first time the open menu shows (REFINE_ROWS rows or more), the scales around the one
 // in use, REFINE_STEP apart, are read too, and the one reading the most rows best is kept.
-const REFINE_ROWS: usize = 4;
+// (3: Reinforce, SOS Beacon and Resupply, which read at a scale a little off where your own four rows below them do
+// not, as on 22 October with four sentries at 0.9 for 0.89)
+const REFINE_ROWS: usize = 3;
 const REFINE_STEP: f64 = 0.005;
 const REFINE_AROUND: i32 = 6;
 
